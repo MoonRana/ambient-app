@@ -1,0 +1,41 @@
+Build a HIPAA-compliant clinical documentation app called "DoMyNote Ambient" with these features:
+
+**Core Workflow (4-step wizard):**
+1. Recording Permission Screen - Request microphone access with animated mic icon, privacy/security info cards explaining HIPAA compliance
+2. Audio Recording Screen - Large record/stop button, real-time recording timer, waveform visualization, pause/resume capability  
+3. Document Capture Screen - Camera to photograph medication bottles and clinical documents, support multiple photos, image preview grid
+4. Review & Generate Screen - Show transcription, captured images, "Generate SOAP Note" button
+
+**Technical Requirements:**
+- Use Expo Audio for native recording (not web MediaRecorder)
+- Use Expo Camera for document/medication capture  
+- Use Expo FileSystem to store recordings locally
+- Connect to Supabase backend at: https://iunqfdwarvpgrjgjhqaw.supabase.co
+- Call edge function "upload-audio-to-s3" to upload recordings
+- Call edge function "start-healthscribe-job" to process audio
+- Call edge function "generate-soap-note" to create clinical note
+
+**UI/UX:**
+- Dark mode support
+- Bottom navigation with: Record, History, Settings tabs
+- Swipeable wizard steps on recording flow
+- Keep screen awake during recording
+- Show processing status with progress indicators
+
+**Data Model:**
+- Store session_id, patient context, recording duration
+- Track upload progress and transcription status
+- Save generated notes locally and sync to Supabase
+
+**Authentication:**
+- Supabase Auth with email/password
+- Protected routes requiring login
+Key Files to Share with Rork
+If Rork allows file uploads, share these from your Lovable project:
+
+File	Why It's Useful
+src/components/ambient/MobileAmbientWizard.tsx	The mobile wizard flow structure
+src/hooks/useAudioRecorder.ts	Audio recording logic to adapt
+src/hooks/useHealthScribe.ts	AWS HealthScribe integration
+src/hooks/useAmbientSession.ts	Session management
+supabase/functions/upload-audio-to-s3/index.ts	Backend endpoint reference

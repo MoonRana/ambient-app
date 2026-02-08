@@ -1,0 +1,170 @@
+DoMyNote Ambient AI Core Logic
+
+This plan creates a standalone reference file that extracts all the core audio recording, transcription, and HealthScribe integration logic from DoMyNote. This document is designed for Rork to use when building the native iOS app.
+
+---
+
+## File to Create
+
+**`RORK_AMBIENT_REFERENCE.md`** - A comprehensive markdown document containing:
+
+1. **Architecture Overview** - How the ambient recording pipeline works
+2. **Data Types & Interfaces** - TypeScript interfaces for sessions, medications, diagnoses
+3. **Audio Recording Logic** - Complete recording state machine with pause/resume/stop
+4. **Real-time Transcription** - ElevenLabs Scribe WebSocket integration
+5. **HealthScribe Integration** - AWS job management and polling
+6. **API Endpoints** - All edge functions with request/response schemas
+7. **Workflow State Machine** - 4-step wizard logic
+8. **React Native / Expo Equivalents** - Mapping web APIs to native equivalents
+
+---
+
+## Document Contents
+
+### Section 1: System Architecture
+```text
+Web App (Recording) 
+    → Edge Function (upload-audio-to-s3)
+    → S3 Bucket
+    → Edge Function (start-healthscribe-job)
+    → AWS HealthScribe
+    → Edge Function (get-healthscribe-status) [polling]
+    → Edge Function (fetch-healthscribe-results)
+    → Edge Function (generate-soap-note)
+    → Final SOAP Note
+```
+
+### Section 2: TypeScript Interfaces
+Extract and document all interfaces:
+- `PatientInfo` - name, DOB, member_id, payer, address
+- `ExtractedMedication` - medication_name, dosage, frequency
+- `InferredDiagnosis` - diagnosis_name, icd10_code, source, status
+- `AmbientSession` - full session object
+- `HealthScribeJob` - job status and results
+- `TranscriptSegment` - speaker-labeled transcript chunks
+
+### Section 3: Audio Recording State Machine
+```
+States: IDLE → RECORDING → PAUSED → STOPPED
+Events: start, pause, resume, stop
+Output: Blob (audio/webm or audio/mp4)
+```
+Include:
+- MediaRecorder configuration
+- Audio level visualization
+- Wake lock for screen-on
+- Chunk collection strategy
+- Timeout fallback for `onstop`
+
+### Section 4: Blob-to-Base64 Conversion
+The critical mobile-safe conversion:
+```javascript
+// FileReader approach (mobile-safe, no stack overflow)
+reader.readAsDataURL(blob);
+// Extract base64 after comma: "data:audio/webm;base64,..."
+```
+
+### Section 5: Edge Function Contracts
+
+**upload-audio-to-s3**
+```
+POST /functions/v1/upload-audio-to-s3
+Body: { audio_base64: string, content_type: string, session_id: string }
+Response: { success: true, s3_uri: string, file_key: string, size_bytes: number }
+```
+
+**start-healthscribe-job**
+```
+POST /functions/v1/start-healthscribe-job
+Body: { session_id: string, audio_s3_uri: string }
+Response: { job_name: string, job_id: string, status: string }
+```
+
+**get-healthscribe-status**
+```
+POST /functions/v1/get-healthscribe-status
+Body: { job_name: string }
+Response: { job_name, status, transcript?: { uri }, clinical_data?: { uri }, failure_reason? }
+```
+
+**fetch-healthscribe-results**
+```
+POST /functions/v1/fetch-healthscribe-results
+Body: { transcript_uri: string, clinical_uri: string }
+Response: { transcript: { formatted, segments }, clinical: { sections }, summary }
+```
+
+**generate-soap-note**
+```
+POST /functions/v1/generate-soap-note
+Body: { 
+  session_id, patient_info, medications[], diagnoses[], 
+  transcript?, clinical_data?, healthscribe_summary? 
+}
+Response: { full_note: string, sections: { subjective, objective, assessment, plan } }
+```
+
+**elevenlabs-scribe-token**
+```
+POST /functions/v1/elevenlabs-scribe-token
+Body: (none)
+Response: { token: string }
+```
+
+### Section 6: HealthScribe Polling Logic
+```javascript
+// Polling states: QUEUED → IN_PROGRESS → COMPLETED | FAILED
+// Poll every 5 seconds
+// Max 60 attempts (5 minutes timeout)
+// On COMPLETED: fetch results automatically
+```
+
+### Section 7: Real-time Transcription (ElevenLabs)
+WebSocket connection to `wss://api.elevenlabs.io/v1/scribe`
+- Send audio chunks as base64 PCM
+- Receive `partial_transcript` and `committed_transcript` events
+- Build `fullTranscript` from committed entries
+
+### Section 8: React Native Equivalents
+| Web API | React Native / Expo Equivalent |
+|---------|-------------------------------|
+| `navigator.mediaDevices.getUserMedia` | `expo-av` Audio.Recording |
+| `MediaRecorder` | `expo-av` Recording API |
+| `FileReader.readAsDataURL` | `expo-file-system` readAsStringAsync |
+| `navigator.wakeLock` | `expo-keep-awake` |
+| `WebSocket` | React Native WebSocket or `socket.io-client` |
+| `fetch` to Supabase | `@supabase/supabase-js` (same SDK) |
+
+### Section 9: 4-Step Wizard Flow
+```
+Step 1: Document Capture (ID/Insurance) → updatePatientInfo()
+Step 2: Medication Capture (Pill bottles) → addMedication()
+Step 3: Diagnosis Review → setInferredDiagnoses()
+Step 4: SOAP Note Generation → generateNote() → completeSession()
+```
+
+### Section 10: Supabase Configuration
+```javascript
+const SUPABASE_URL = "https://iunqfdwarvpgrjgjhqaw.supabase.co";
+// Use environment variable for anon key in production
+```
+
+---
+
+## Why This Approach?
+
+1. **Single Reference File** - One document Rork can ingest completely
+2. **API Contracts** - Exact request/response schemas for edge functions
+3. **Platform Mapping** - Shows web→native equivalents
+4. **State Machine** - Clear recording lifecycle for implementation
+5. **Critical Gotchas** - Mobile-safe base64 conversion, wake lock, timeout fallbacks
+
+---
+
+## Technical Notes
+
+- The document preserves exact interface definitions from TypeScript
+- All edge function endpoints are documented with full schemas
+- The Supabase client configuration is included
+- React Native library recommendations are provided for each web API
+- HIPAA compliance notes are included where relevant
