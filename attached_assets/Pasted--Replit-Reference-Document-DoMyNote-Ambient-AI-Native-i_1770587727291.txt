@@ -1,0 +1,523 @@
+
+# Replit Reference Document: DoMyNote Ambient AI Native iOS App
+
+This plan creates a comprehensive standalone reference document optimized for Replit to build a native iOS app using React Native and Expo.
+
+---
+
+## File to Create
+
+**`REPLIT_AMBIENT_REFERENCE.md`**
+
+A complete technical specification containing:
+- Full architecture overview
+- TypeScript interfaces
+- Audio recording implementation for React Native
+- Edge function API contracts with exact request/response schemas
+- Workflow state machine
+- Platform-specific mapping (Web to React Native)
+- Supabase configuration
+
+---
+
+## Document Structure
+
+### 1. Project Overview
+- App name: DoMyNote Ambient
+- Purpose: HIPAA-compliant clinical documentation via ambient audio capture
+- Stack: React Native + Expo for iOS
+- Backend: Existing Supabase project (no changes needed)
+
+### 2. Supabase Configuration
+```
+URL: https://iunqfdwarvpgrjgjhqaw.supabase.co
+Anon Key: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ipl1bnFmZHdhcnZwZ3JqZ2pocWF3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTM1MDc3MDIsImV4cCI6MjA2OTA4MzcwMn0.5VdlcDIA3NpqaDq2YM9epEw07nqlRanyG0YdmyWnxdA
+```
+
+### 3. TypeScript Interfaces
+
+**PatientInfo**
+```typescript
+interface PatientInfo {
+  name?: string;
+  date_of_birth?: string;
+  member_id?: string;
+  group_number?: string;
+  payer_name?: string;
+  address?: string;
+}
+```
+
+**ExtractedMedication**
+```typescript
+interface ExtractedMedication {
+  id?: string;
+  medication_name: string;
+  dosage?: string;
+  frequency?: string;
+  confidence_score?: number;
+  image_uri?: string;
+}
+```
+
+**InferredDiagnosis**
+```typescript
+interface InferredDiagnosis {
+  id?: string;
+  diagnosis_name: string;
+  icd10_code: string;
+  source: 'medication_inference' | 'transcript' | 'manual';
+  source_medication_name?: string;
+  status: 'suggested' | 'confirmed' | 'rejected';
+  is_primary?: boolean;
+  display_order?: number;
+}
+```
+
+**AmbientSession**
+```typescript
+interface AmbientSession {
+  id: string;
+  user_id: string;
+  patient_id?: string;
+  status: 'in_progress' | 'completed' | 'abandoned';
+  current_step: number;
+  session_data: {
+    patient_info: PatientInfo;
+    medications?: ExtractedMedication[];
+    diagnoses?: InferredDiagnosis[];
+  };
+  audio_s3_uri?: string;
+  healthscribe_job_id?: string;
+  transcript?: any;
+  clinical_data?: any;
+  generated_note?: string;
+  created_at: string;
+  updated_at: string;
+}
+```
+
+**HealthScribeJob**
+```typescript
+type HealthScribeStatus = 'IDLE' | 'QUEUED' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED';
+
+interface HealthScribeJob {
+  job_name: string;
+  status: HealthScribeStatus;
+  transcript?: { uri: string };
+  clinical_data?: { uri: string };
+  failure_reason?: string;
+  results?: {
+    transcript?: { raw: any; segments: any[]; formatted: string };
+    clinical?: { raw: any; sections: any[] };
+    summary?: {
+      chiefComplaint?: string;
+      historyOfPresentIllness?: string;
+      assessment?: string;
+      plan?: string;
+    };
+  };
+}
+```
+
+### 4. Audio Recording (React Native / Expo)
+
+**Web Implementation (for reference):**
+- Uses `navigator.mediaDevices.getUserMedia()`
+- `MediaRecorder` API with `audio/webm;codecs=opus`
+- Collects chunks every 1 second
+- 3-second timeout fallback for `onstop` event
+
+**React Native Equivalent (Expo):**
+```javascript
+import { Audio } from 'expo-av';
+
+// Request permissions
+const { status } = await Audio.requestPermissionsAsync();
+
+// Configure audio mode
+await Audio.setAudioModeAsync({
+  allowsRecordingIOS: true,
+  playsInSilentModeIOS: true,
+  staysActiveInBackground: true,
+});
+
+// Start recording
+const recording = new Audio.Recording();
+await recording.prepareToRecordAsync({
+  isMeteringEnabled: true,
+  android: {
+    extension: '.m4a',
+    outputFormat: Audio.AndroidOutputFormat.MPEG_4,
+    audioEncoder: Audio.AndroidAudioEncoder.AAC,
+    sampleRate: 44100,
+    numberOfChannels: 1,
+    bitRate: 128000,
+  },
+  ios: {
+    extension: '.m4a',
+    outputFormat: Audio.IOSOutputFormat.MPEG4AAC,
+    audioQuality: Audio.IOSAudioQuality.HIGH,
+    sampleRate: 44100,
+    numberOfChannels: 1,
+    bitRate: 128000,
+  },
+});
+await recording.startAsync();
+
+// Stop and get file URI
+await recording.stopAndUnloadAsync();
+const uri = recording.getURI();
+```
+
+### 5. File-to-Base64 Conversion (React Native)
+
+**Web Implementation:**
+```javascript
+// FileReader approach (mobile-safe)
+const reader = new FileReader();
+reader.readAsDataURL(blob);
+// Extract base64 after comma
+```
+
+**React Native Equivalent:**
+```javascript
+import * as FileSystem from 'expo-file-system';
+
+const base64 = await FileSystem.readAsStringAsync(fileUri, {
+  encoding: FileSystem.EncodingType.Base64,
+});
+```
+
+### 6. Wake Lock (Keep Screen On)
+
+**Web Implementation:**
+```javascript
+const sentinel = await navigator.wakeLock.request('screen');
+```
+
+**React Native Equivalent:**
+```javascript
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
+
+// Start recording
+await activateKeepAwakeAsync();
+
+// Stop recording
+deactivateKeepAwake();
+```
+
+### 7. Edge Function API Contracts
+
+#### A. Upload Audio to S3
+```
+POST https://iunqfdwarvpgrjgjhqaw.supabase.co/functions/v1/upload-audio-to-s3
+
+Headers:
+  Authorization: Bearer <user_jwt>
+  Content-Type: application/json
+
+Request Body:
+{
+  "audio_base64": "base64_encoded_audio_data",
+  "content_type": "audio/m4a",  // or "audio/webm"
+  "session_id": "uuid"
+}
+
+Response (200):
+{
+  "success": true,
+  "s3_uri": "s3://bucket/ambient-audio/session-id/timestamp.m4a",
+  "file_key": "ambient-audio/session-id/timestamp.m4a",
+  "size_bytes": 123456
+}
+
+Response (500):
+{
+  "error": "Error message",
+  "success": false
+}
+```
+
+#### B. Start HealthScribe Job
+```
+POST https://iunqfdwarvpgrjgjhqaw.supabase.co/functions/v1/start-healthscribe-job
+
+Headers:
+  Authorization: Bearer <user_jwt>
+  Content-Type: application/json
+
+Request Body:
+{
+  "session_id": "uuid",
+  "audio_s3_uri": "s3://bucket/path/to/audio.m4a"
+}
+
+Response (200):
+{
+  "job_name": "ambient-sessionid-timestamp",
+  "job_id": "ambient-sessionid-timestamp",
+  "status": "QUEUED",
+  "output_location": "s3://output-bucket/healthscribe-output/..."
+}
+
+Response (500):
+{
+  "error": "Error message",
+  "details": "Stack trace if available"
+}
+```
+
+#### C. Get HealthScribe Status (Polling)
+```
+POST https://iunqfdwarvpgrjgjhqaw.supabase.co/functions/v1/get-healthscribe-status
+
+Request Body:
+{
+  "job_name": "ambient-sessionid-timestamp"
+}
+
+Response (200) - In Progress:
+{
+  "job_name": "ambient-sessionid-timestamp",
+  "status": "IN_PROGRESS"
+}
+
+Response (200) - Completed:
+{
+  "job_name": "ambient-sessionid-timestamp",
+  "status": "COMPLETED",
+  "transcript": { "uri": "s3://bucket/transcript.json" },
+  "clinical_data": { "uri": "s3://bucket/clinical.json" }
+}
+
+Response (200) - Failed:
+{
+  "job_name": "ambient-sessionid-timestamp",
+  "status": "FAILED",
+  "failure_reason": "Error description"
+}
+```
+
+#### D. Fetch HealthScribe Results
+```
+POST https://iunqfdwarvpgrjgjhqaw.supabase.co/functions/v1/fetch-healthscribe-results
+
+Request Body:
+{
+  "transcript_uri": "s3://bucket/transcript.json",
+  "clinical_uri": "s3://bucket/clinical.json"
+}
+
+Response (200):
+{
+  "transcript": {
+    "raw": { ... },
+    "segments": [
+      {
+        "segmentId": "1",
+        "beginTime": 0.5,
+        "endTime": 3.2,
+        "content": "Good morning, how are you feeling?",
+        "speaker": "CLINICIAN"
+      }
+    ],
+    "formatted": "[Clinician]: Good morning..."
+  },
+  "clinical": {
+    "raw": { ... },
+    "sections": [
+      { "sectionName": "CHIEF_COMPLAINT", "summary": ["..."] }
+    ]
+  },
+  "summary": {
+    "chiefComplaint": "...",
+    "historyOfPresentIllness": "...",
+    "assessment": "...",
+    "plan": "..."
+  }
+}
+```
+
+#### E. Generate SOAP Note
+```
+POST https://iunqfdwarvpgrjgjhqaw.supabase.co/functions/v1/generate-soap-note
+
+Request Body:
+{
+  "session_id": "uuid",
+  "patient_info": {
+    "name": "John Doe",
+    "date_of_birth": "1988-12-14",
+    "member_id": "XYZ123"
+  },
+  "medications": [
+    { "medication_name": "Lisinopril", "dosage": "10mg", "frequency": "Once daily" }
+  ],
+  "diagnoses": [
+    { "diagnosis_name": "Hypertension", "icd10_code": "I10", "is_primary": true }
+  ],
+  "transcript": "Formatted transcript text...",
+  "healthscribe_summary": { ... }
+}
+
+Response (200):
+{
+  "full_note": "## SUBJECTIVE\n\n### Chief Complaint...",
+  "sections": {
+    "subjective": "...",
+    "objective": "...",
+    "assessment": "...",
+    "plan": "...",
+    "followUp": "..."
+  },
+  "generated_at": "2025-02-08T12:00:00Z"
+}
+```
+
+#### F. ElevenLabs Scribe Token (Real-time Transcription)
+```
+POST https://iunqfdwarvpgrjgjhqaw.supabase.co/functions/v1/elevenlabs-scribe-token
+
+Headers:
+  Authorization: Bearer <user_jwt>
+
+Request Body: (none required)
+
+Response (200):
+{
+  "token": "single-use-token-string"
+}
+```
+
+### 8. HealthScribe Polling Logic
+
+```javascript
+const POLLING_INTERVAL = 5000; // 5 seconds
+const MAX_ATTEMPTS = 60; // 5 minutes total
+
+async function pollHealthScribe(jobName) {
+  let attempts = 0;
+  
+  while (attempts < MAX_ATTEMPTS) {
+    const status = await checkJobStatus(jobName);
+    
+    if (status.status === 'COMPLETED') {
+      const results = await fetchResults(status.transcript.uri, status.clinical_data.uri);
+      return results;
+    }
+    
+    if (status.status === 'FAILED') {
+      throw new Error(status.failure_reason || 'Job failed');
+    }
+    
+    // QUEUED or IN_PROGRESS - continue polling
+    await sleep(POLLING_INTERVAL);
+    attempts++;
+  }
+  
+  throw new Error('Polling timeout');
+}
+```
+
+### 9. 4-Step Wizard Flow
+
+```
+Step 1: Documents (ID & Insurance)
+  - Capture images using expo-camera
+  - Call extract-document-info edge function
+  - Update session.session_data.patient_info
+
+Step 2: Medications (Pill Bottles)
+  - Capture images of medication bottles
+  - Call extract-medications edge function
+  - Add to session.session_data.medications[]
+
+Step 3: Diagnoses
+  - Call infer-diagnoses with medications list
+  - Display suggested diagnoses
+  - Allow confirm/reject/add manual
+  - Update session.session_data.diagnoses[]
+
+Step 4: SOAP Note Generation
+  - Stop recording if still active
+  - Upload audio to S3
+  - Start HealthScribe job
+  - Poll for completion
+  - Generate SOAP note
+  - Sign and finalize
+```
+
+### 10. Platform Mapping Table
+
+| Web API | React Native / Expo |
+|---------|---------------------|
+| `navigator.mediaDevices.getUserMedia` | `expo-av` Audio.Recording |
+| `MediaRecorder` | `expo-av` Recording API |
+| `FileReader.readAsDataURL` | `expo-file-system` readAsStringAsync |
+| `navigator.wakeLock` | `expo-keep-awake` |
+| `WebSocket` | React Native WebSocket (built-in) |
+| `fetch` to Supabase | `@supabase/supabase-js` (same SDK) |
+| `navigator.camera` | `expo-camera` |
+| `localStorage` | `@react-native-async-storage/async-storage` |
+| `crypto.randomUUID()` | `uuid` package or `expo-crypto` |
+
+### 11. Required Expo Packages
+
+```json
+{
+  "dependencies": {
+    "@supabase/supabase-js": "^2.52.1",
+    "expo": "~52.0.0",
+    "expo-av": "~14.0.0",
+    "expo-camera": "~16.0.0",
+    "expo-file-system": "~18.0.0",
+    "expo-keep-awake": "~14.0.0",
+    "expo-crypto": "~14.0.0",
+    "@react-native-async-storage/async-storage": "^2.0.0",
+    "react-native": "0.76.0"
+  }
+}
+```
+
+### 12. Database Tables Used
+
+```sql
+-- ambient_sessions: Main session storage
+-- patients: Patient demographics
+-- patient_medications: Medication list
+-- patient_diagnoses: Diagnosis list
+-- patient_encounters: Visit records
+-- reports: Final notes
+
+-- All tables have user_id foreign key for multi-tenancy
+-- RLS policies restrict access to authenticated user's data
+```
+
+### 13. Critical Implementation Notes
+
+1. **Audio Format**: iOS native recording uses `.m4a` (AAC), not `.webm`. The upload function accepts both.
+
+2. **Base64 Size**: Large recordings can produce huge base64 strings. For recordings over 5 minutes, consider chunked uploads or presigned URLs.
+
+3. **Background Recording**: Configure `staysActiveInBackground: true` in audio mode for uninterrupted recording.
+
+4. **Error Handling**: Always provide fallback to ElevenLabs live transcript if HealthScribe fails.
+
+5. **Session Persistence**: Store session ID in AsyncStorage to resume after app restart.
+
+6. **HIPAA Compliance**: All PHI is transmitted over HTTPS. No PHI is logged or stored on device beyond session cache.
+
+---
+
+## Next Steps for Replit
+
+1. Create new React Native / Expo project
+2. Install dependencies from package list
+3. Configure Supabase client with provided credentials
+4. Implement 4-step wizard screens
+5. Integrate audio recording with expo-av
+6. Connect to edge functions for processing
+7. Test end-to-end flow
+8. Build for iOS using EAS Build
+

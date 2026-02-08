@@ -1,0 +1,422 @@
+import React, { useState, useCallback } from 'react';
+import {
+  View, Text, StyleSheet, Pressable, useColorScheme, Platform,
+  ScrollView, TextInput, ActivityIndicator,
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
+import { router } from 'expo-router';
+import { Image } from 'expo-image';
+import * as Haptics from 'expo-haptics';
+import Animated, { FadeIn, FadeInDown, FadeInUp } from 'react-native-reanimated';
+import { useThemeColors } from '@/constants/colors';
+import { useSessions } from '@/lib/session-context';
+
+function formatDuration(seconds: number): string {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
+function generateMockSOAPNote(duration: number, imageCount: number, context: string): {
+  subjective: string;
+  objective: string;
+  assessment: string;
+  plan: string;
+} {
+  return {
+    subjective: `Patient presents for evaluation. ${context ? context : 'Encounter documented via ambient recording.'} Recording duration: ${formatDuration(duration)}. ${imageCount > 0 ? `${imageCount} clinical document(s) captured for reference.` : ''}`,
+    objective: `Vital signs reviewed. Physical examination performed. ${imageCount > 0 ? 'Medication and document images reviewed.' : ''} Patient appeared in no acute distress.`,
+    assessment: `Clinical encounter documented. Further analysis pending review of recorded audio and captured documentation. Differential diagnoses to be determined based on complete clinical picture.`,
+    plan: `1. Review and verify transcription accuracy\n2. ${imageCount > 0 ? 'Cross-reference captured medications with current medication list' : 'Document medications as reported'}\n3. Follow up as clinically indicated\n4. Patient education provided as appropriate`,
+  };
+}
+
+export default function ReviewScreen() {
+  const colorScheme = useColorScheme();
+  const colors = useThemeColors(colorScheme);
+  const insets = useSafeAreaInsets();
+  const { currentSession, updateSession } = useSessions();
+
+  const [patientContext, setPatientContext] = useState(currentSession?.patientContext || '');
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [soapNote, setSoapNote] = useState(currentSession?.soapNote || null);
+
+  const handleGenerateNote = useCallback(async () => {
+    if (!currentSession) return;
+
+    setIsGenerating(true);
+    if (Platform.OS !== 'web') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    const note = generateMockSOAPNote(
+      currentSession.recordingDuration,
+      currentSession.capturedImages.length,
+      patientContext,
+    );
+
+    setSoapNote(note);
+    updateSession(currentSession.id, {
+      soapNote: note,
+      patientContext,
+      status: 'completed',
+    });
+
+    setIsGenerating(false);
+
+    if (Platform.OS !== 'web') {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    }
+  }, [currentSession, patientContext]);
+
+  const handleDone = () => {
+    router.dismissAll();
+  };
+
+  const handleCancel = () => {
+    router.dismissAll();
+  };
+
+  const webTopInset = Platform.OS === 'web' ? 20 : 0;
+
+  return (
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <View style={[styles.header, { paddingTop: (Platform.OS === 'web' ? webTopInset : insets.top) + 8 }]}>
+        <Pressable
+          onPress={handleCancel}
+          hitSlop={12}
+          style={({ pressed }) => [
+            styles.headerBtn,
+            { backgroundColor: colors.surfaceSecondary, opacity: pressed ? 0.7 : 1 },
+          ]}
+        >
+          <Ionicons name="close" size={22} color={colors.text} />
+        </Pressable>
+
+        <View style={[styles.stepIndicator, { backgroundColor: colors.surfaceSecondary }]}>
+          <View style={[styles.stepDot, { backgroundColor: colors.tint }]} />
+          <View style={[styles.stepDot, { backgroundColor: colors.tint }]} />
+          <View style={[styles.stepDot, { backgroundColor: colors.tint }]} />
+        </View>
+
+        <View style={{ width: 36 }} />
+      </View>
+
+      <ScrollView
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingBottom: Platform.OS === 'web' ? 34 + 80 : Math.max(insets.bottom, 16) + 80 },
+        ]}
+        showsVerticalScrollIndicator={false}
+      >
+        <Animated.View entering={FadeInDown.duration(400)}>
+          <Text style={[styles.title, { color: colors.text }]}>Review & Generate</Text>
+          <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+            Review your session details and generate a SOAP note.
+          </Text>
+        </Animated.View>
+
+        <Animated.View entering={FadeInDown.duration(400).delay(100)} style={styles.summarySection}>
+          <Text style={[styles.sectionLabel, { color: colors.textSecondary }]}>Session Summary</Text>
+          <View style={[styles.summaryCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <View style={styles.summaryRow}>
+              <Ionicons name="time-outline" size={18} color={colors.tint} />
+              <Text style={[styles.summaryLabel, { color: colors.textSecondary }]}>Duration</Text>
+              <Text style={[styles.summaryValue, { color: colors.text }]}>
+                {formatDuration(currentSession?.recordingDuration || 0)}
+              </Text>
+            </View>
+            <View style={[styles.divider, { backgroundColor: colors.border }]} />
+            <View style={styles.summaryRow}>
+              <Ionicons name="images-outline" size={18} color={colors.accent} />
+              <Text style={[styles.summaryLabel, { color: colors.textSecondary }]}>Documents</Text>
+              <Text style={[styles.summaryValue, { color: colors.text }]}>
+                {currentSession?.capturedImages.length || 0} captured
+              </Text>
+            </View>
+            {currentSession?.recordingUri && (
+              <>
+                <View style={[styles.divider, { backgroundColor: colors.border }]} />
+                <View style={styles.summaryRow}>
+                  <Ionicons name="mic-outline" size={18} color={colors.recording} />
+                  <Text style={[styles.summaryLabel, { color: colors.textSecondary }]}>Recording</Text>
+                  <Text style={[styles.summaryValue, { color: colors.accent }]}>Saved</Text>
+                </View>
+              </>
+            )}
+          </View>
+        </Animated.View>
+
+        {currentSession && currentSession.capturedImages.length > 0 && (
+          <Animated.View entering={FadeInDown.duration(400).delay(150)}>
+            <Text style={[styles.sectionLabel, { color: colors.textSecondary }]}>Captured Documents</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.imageScroll}>
+              {currentSession.capturedImages.map(img => (
+                <Image
+                  key={img.id}
+                  source={{ uri: img.uri }}
+                  style={[styles.previewImage, { borderColor: colors.border }]}
+                  contentFit="cover"
+                />
+              ))}
+            </ScrollView>
+          </Animated.View>
+        )}
+
+        <Animated.View entering={FadeInDown.duration(400).delay(200)}>
+          <Text style={[styles.sectionLabel, { color: colors.textSecondary }]}>Patient Context (Optional)</Text>
+          <TextInput
+            style={[styles.contextInput, {
+              backgroundColor: colors.surface,
+              borderColor: colors.border,
+              color: colors.text,
+            }]}
+            placeholder="Add any additional context about this encounter..."
+            placeholderTextColor={colors.textTertiary}
+            value={patientContext}
+            onChangeText={setPatientContext}
+            multiline
+            numberOfLines={3}
+            textAlignVertical="top"
+          />
+        </Animated.View>
+
+        {!soapNote && (
+          <Animated.View entering={FadeInDown.duration(400).delay(300)}>
+            <Pressable
+              onPress={handleGenerateNote}
+              disabled={isGenerating}
+              style={({ pressed }) => [
+                styles.generateBtn,
+                {
+                  backgroundColor: isGenerating ? colors.surfaceSecondary : colors.accent,
+                  opacity: pressed && !isGenerating ? 0.9 : 1,
+                },
+              ]}
+            >
+              {isGenerating ? (
+                <>
+                  <ActivityIndicator color="#fff" size="small" />
+                  <Text style={styles.generateBtnText}>Generating SOAP Note...</Text>
+                </>
+              ) : (
+                <>
+                  <Ionicons name="document-text" size={20} color="#fff" />
+                  <Text style={styles.generateBtnText}>Generate SOAP Note</Text>
+                </>
+              )}
+            </Pressable>
+          </Animated.View>
+        )}
+
+        {soapNote && (
+          <Animated.View entering={FadeIn.duration(500)} style={styles.soapSection}>
+            <View style={styles.soapHeader}>
+              <Ionicons name="checkmark-circle" size={20} color={colors.accent} />
+              <Text style={[styles.soapTitle, { color: colors.accent }]}>SOAP Note Generated</Text>
+            </View>
+
+            {(['subjective', 'objective', 'assessment', 'plan'] as const).map((section, idx) => (
+              <Animated.View
+                key={section}
+                entering={FadeInDown.duration(300).delay(100 + idx * 80)}
+                style={[styles.soapCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
+              >
+                <Text style={[styles.soapSectionTitle, { color: colors.tint }]}>
+                  {section.charAt(0).toUpperCase() + section.slice(1)}
+                </Text>
+                <Text style={[styles.soapText, { color: colors.text }]}>
+                  {soapNote[section]}
+                </Text>
+              </Animated.View>
+            ))}
+          </Animated.View>
+        )}
+      </ScrollView>
+
+      {soapNote && (
+        <Animated.View
+          entering={FadeInUp.duration(400)}
+          style={[styles.footer, { paddingBottom: Platform.OS === 'web' ? 34 : Math.max(insets.bottom, 16) + 8 }]}
+        >
+          <Pressable
+            onPress={handleDone}
+            style={({ pressed }) => [
+              styles.doneButton,
+              { backgroundColor: colors.tint, opacity: pressed ? 0.9 : 1 },
+            ]}
+          >
+            <Ionicons name="checkmark" size={22} color="#fff" />
+            <Text style={styles.doneButtonText}>Done</Text>
+          </Pressable>
+        </Animated.View>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingBottom: 8,
+  },
+  headerBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepIndicator: {
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
+  stepDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  scrollContent: {
+    paddingHorizontal: 24,
+    paddingTop: 16,
+    gap: 24,
+  },
+  title: {
+    fontSize: 24,
+    fontFamily: 'Inter_700Bold',
+  },
+  subtitle: {
+    fontSize: 15,
+    fontFamily: 'Inter_400Regular',
+    lineHeight: 22,
+    marginTop: 6,
+  },
+  summarySection: {
+    gap: 10,
+  },
+  sectionLabel: {
+    fontSize: 13,
+    fontFamily: 'Inter_600SemiBold',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    marginBottom: 8,
+  },
+  summaryCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 10,
+  },
+  summaryLabel: {
+    flex: 1,
+    fontSize: 14,
+    fontFamily: 'Inter_400Regular',
+  },
+  summaryValue: {
+    fontSize: 14,
+    fontFamily: 'Inter_600SemiBold',
+  },
+  divider: {
+    height: StyleSheet.hairlineWidth,
+    marginHorizontal: 14,
+  },
+  imageScroll: {
+    marginTop: -4,
+  },
+  previewImage: {
+    width: 80,
+    height: 80,
+    borderRadius: 10,
+    borderWidth: 1,
+    marginRight: 8,
+  },
+  contextInput: {
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 14,
+    fontSize: 15,
+    fontFamily: 'Inter_400Regular',
+    minHeight: 80,
+  },
+  generateBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    paddingVertical: 16,
+    borderRadius: 14,
+  },
+  generateBtnText: {
+    fontSize: 17,
+    fontFamily: 'Inter_600SemiBold',
+    color: '#fff',
+  },
+  soapSection: {
+    gap: 12,
+  },
+  soapHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  soapTitle: {
+    fontSize: 16,
+    fontFamily: 'Inter_600SemiBold',
+  },
+  soapCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 16,
+    gap: 8,
+  },
+  soapSectionTitle: {
+    fontSize: 13,
+    fontFamily: 'Inter_700Bold',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  soapText: {
+    fontSize: 14,
+    fontFamily: 'Inter_400Regular',
+    lineHeight: 21,
+  },
+  footer: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    paddingHorizontal: 24,
+    paddingTop: 12,
+  },
+  doneButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 16,
+    borderRadius: 14,
+  },
+  doneButtonText: {
+    fontSize: 17,
+    fontFamily: 'Inter_600SemiBold',
+    color: '#fff',
+  },
+});
