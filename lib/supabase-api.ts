@@ -1,5 +1,4 @@
 import { supabase } from './supabase';
-import * as FileSystem from 'expo-file-system';
 import { Platform } from 'react-native';
 
 const POLLING_INTERVAL = 5000;
@@ -44,8 +43,9 @@ export async function uploadAudioToS3(audioUri: string, sessionId: string): Prom
       reader.readAsDataURL(blob);
     });
   } else {
+    const FileSystem = await import('expo-file-system');
     audioBase64 = await FileSystem.readAsStringAsync(audioUri, {
-      encoding: FileSystem.EncodingType.Base64,
+      encoding: 'base64',
     });
   }
 
