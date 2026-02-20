@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, Pressable, useColorScheme, Platform,
-  ScrollView, TextInput, ActivityIndicator,
+  ScrollView, TextInput, ActivityIndicator, Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -11,6 +11,7 @@ import * as Haptics from 'expo-haptics';
 import Animated, { FadeIn, FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { useThemeColors } from '@/constants/colors';
 import { useSessions } from '@/lib/session-context';
+import { processRecordingToSOAP, type ProcessingProgress } from '@/lib/supabase-api';
 
 function formatDuration(seconds: number): string {
   const mins = Math.floor(seconds / 60);
@@ -18,19 +19,15 @@ function formatDuration(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
-function generateMockSOAPNote(duration: number, imageCount: number, context: string): {
-  subjective: string;
-  objective: string;
-  assessment: string;
-  plan: string;
-} {
-  return {
-    subjective: `Patient presents for evaluation. ${context ? context : 'Encounter documented via ambient recording.'} Recording duration: ${formatDuration(duration)}. ${imageCount > 0 ? `${imageCount} clinical document(s) captured for reference.` : ''}`,
-    objective: `Vital signs reviewed. Physical examination performed. ${imageCount > 0 ? 'Medication and document images reviewed.' : ''} Patient appeared in no acute distress.`,
-    assessment: `Clinical encounter documented. Further analysis pending review of recorded audio and captured documentation. Differential diagnoses to be determined based on complete clinical picture.`,
-    plan: `1. Review and verify transcription accuracy\n2. ${imageCount > 0 ? 'Cross-reference captured medications with current medication list' : 'Document medications as reported'}\n3. Follow up as clinically indicated\n4. Patient education provided as appropriate`,
-  };
-}
+const STEP_LABELS: Record<string, string> = {
+  uploading: 'Uploading Audio',
+  starting: 'Starting Transcription',
+  processing: 'Analyzing Audio',
+  fetching: 'Retrieving Results',
+  generating: 'Generating SOAP Note',
+  complete: 'Complete',
+  error: 'Error',
+};
 
 export default function ReviewScreen() {
   const colorScheme = useColorScheme();
@@ -41,6 +38,7 @@ export default function ReviewScreen() {
   const [patientContext, setPatientContext] = useState(currentSession?.patientContext || '');
   const [isGenerating, setIsGenerating] = useState(false);
   const [soapNote, setSoapNote] = useState(currentSession?.soapNote || null);
+  const [processingProgress, setProcessingProgress] = useState<ProcessingProgress | null>(null);
 
   const handleGenerateNote = useCallback(async () => {
     if (!currentSession) return;
@@ -50,26 +48,86 @@ export default function ReviewScreen() {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     }
 
-    await new Promise(resolve => setTimeout(resolve, 2000));
-
-    const note = generateMockSOAPNote(
-      currentSession.recordingDuration,
-      currentSession.capturedImages.length,
-      patientContext,
-    );
-
-    setSoapNote(note);
     updateSession(currentSession.id, {
-      soapNote: note,
       patientContext,
-      status: 'completed',
+      status: 'processing',
     });
 
-    setIsGenerating(false);
+    if (currentSession.recordingUri) {
+      try {
+        const result = await processRecordingToSOAP(
+          currentSession.recordingUri,
+          currentSession.id,
+          patientContext,
+          (progress) => setProcessingProgress(progress),
+        );
 
-    if (Platform.OS !== 'web') {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        setSoapNote(result.soapNote);
+        updateSession(currentSession.id, {
+          soapNote: result.soapNote,
+          transcript: result.transcript,
+          fullNote: result.fullNote,
+          patientContext,
+          status: 'completed',
+        });
+
+        if (Platform.OS !== 'web') {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        }
+      } catch (error: any) {
+        console.error('SOAP generation failed:', error);
+        updateSession(currentSession.id, {
+          status: 'error',
+          errorMessage: error.message,
+        });
+
+        Alert.alert(
+          'Processing Error',
+          `Could not process recording: ${error.message}. You can try again or check your connection.`,
+          [{ text: 'OK' }],
+        );
+
+        if (Platform.OS !== 'web') {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        }
+      }
+    } else {
+      setProcessingProgress({ step: 'generating', message: 'Generating note from context...', progress: 0.5 });
+      try {
+        const { generateSOAPNote } = await import('@/lib/supabase-api');
+        const result = await generateSOAPNote({
+          session_id: currentSession.id,
+          patient_info: patientContext ? { name: patientContext } : undefined,
+        });
+
+        setSoapNote(result.sections);
+        updateSession(currentSession.id, {
+          soapNote: result.sections,
+          fullNote: result.full_note,
+          patientContext,
+          status: 'completed',
+        });
+
+        if (Platform.OS !== 'web') {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        }
+      } catch (error: any) {
+        console.error('SOAP generation failed:', error);
+        updateSession(currentSession.id, {
+          status: 'error',
+          errorMessage: error.message,
+        });
+
+        Alert.alert(
+          'Generation Error',
+          `Could not generate note: ${error.message}`,
+          [{ text: 'OK' }],
+        );
+      }
     }
+
+    setIsGenerating(false);
+    setProcessingProgress(null);
   }, [currentSession, patientContext]);
 
   const handleDone = () => {
@@ -181,10 +239,11 @@ export default function ReviewScreen() {
             multiline
             numberOfLines={3}
             textAlignVertical="top"
+            editable={!isGenerating}
           />
         </Animated.View>
 
-        {!soapNote && (
+        {!soapNote && !isGenerating && (
           <Animated.View entering={FadeInDown.duration(400).delay(300)}>
             <Pressable
               onPress={handleGenerateNote}
@@ -192,23 +251,44 @@ export default function ReviewScreen() {
               style={({ pressed }) => [
                 styles.generateBtn,
                 {
-                  backgroundColor: isGenerating ? colors.surfaceSecondary : colors.accent,
-                  opacity: pressed && !isGenerating ? 0.9 : 1,
+                  backgroundColor: colors.accent,
+                  opacity: pressed ? 0.9 : 1,
                 },
               ]}
             >
-              {isGenerating ? (
-                <>
-                  <ActivityIndicator color="#fff" size="small" />
-                  <Text style={styles.generateBtnText}>Generating SOAP Note...</Text>
-                </>
-              ) : (
-                <>
-                  <Ionicons name="document-text" size={20} color="#fff" />
-                  <Text style={styles.generateBtnText}>Generate SOAP Note</Text>
-                </>
-              )}
+              <Ionicons name="document-text" size={20} color="#fff" />
+              <Text style={styles.generateBtnText}>Generate SOAP Note</Text>
             </Pressable>
+          </Animated.View>
+        )}
+
+        {isGenerating && processingProgress && (
+          <Animated.View entering={FadeIn.duration(300)} style={styles.progressSection}>
+            <View style={[styles.progressCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <View style={styles.progressHeader}>
+                <ActivityIndicator color={colors.tint} size="small" />
+                <Text style={[styles.progressTitle, { color: colors.tint }]}>
+                  {STEP_LABELS[processingProgress.step] || 'Processing...'}
+                </Text>
+              </View>
+              <Text style={[styles.progressMessage, { color: colors.textSecondary }]}>
+                {processingProgress.message}
+              </Text>
+              <View style={[styles.progressBarBg, { backgroundColor: colors.surfaceSecondary }]}>
+                <View
+                  style={[
+                    styles.progressBarFill,
+                    {
+                      backgroundColor: colors.tint,
+                      width: `${Math.round(processingProgress.progress * 100)}%`,
+                    },
+                  ]}
+                />
+              </View>
+              <Text style={[styles.progressPercent, { color: colors.textTertiary }]}>
+                {Math.round(processingProgress.progress * 100)}%
+              </Text>
+            </View>
           </Animated.View>
         )}
 
@@ -233,6 +313,16 @@ export default function ReviewScreen() {
                 </Text>
               </Animated.View>
             ))}
+
+            {soapNote.followUp && (
+              <Animated.View
+                entering={FadeInDown.duration(300).delay(420)}
+                style={[styles.soapCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
+              >
+                <Text style={[styles.soapSectionTitle, { color: colors.tint }]}>Follow-Up</Text>
+                <Text style={[styles.soapText, { color: colors.text }]}>{soapNote.followUp}</Text>
+              </Animated.View>
+            )}
           </Animated.View>
         )}
       </ScrollView>
@@ -368,6 +458,42 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontFamily: 'Inter_600SemiBold',
     color: '#fff',
+  },
+  progressSection: {
+    gap: 8,
+  },
+  progressCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 16,
+    gap: 10,
+  },
+  progressHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  progressTitle: {
+    fontSize: 15,
+    fontFamily: 'Inter_600SemiBold',
+  },
+  progressMessage: {
+    fontSize: 13,
+    fontFamily: 'Inter_400Regular',
+  },
+  progressBarBg: {
+    height: 6,
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  progressBarFill: {
+    height: '100%',
+    borderRadius: 3,
+  },
+  progressPercent: {
+    fontSize: 12,
+    fontFamily: 'Inter_500Medium',
+    textAlign: 'right',
   },
   soapSection: {
     gap: 12,

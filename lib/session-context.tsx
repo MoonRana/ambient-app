@@ -11,17 +11,23 @@ export interface AmbientSession {
   id: string;
   createdAt: number;
   updatedAt: number;
-  status: 'recording' | 'captured' | 'reviewing' | 'completed';
+  status: 'recording' | 'captured' | 'reviewing' | 'processing' | 'completed' | 'error';
   recordingDuration: number;
   recordingUri?: string;
   capturedImages: CapturedImage[];
   patientContext?: string;
+  audioS3Uri?: string;
+  healthscribeJobName?: string;
+  transcript?: string;
   soapNote?: {
     subjective: string;
     objective: string;
     assessment: string;
     plan: string;
+    followUp?: string;
   };
+  fullNote?: string;
+  errorMessage?: string;
 }
 
 interface SessionContextValue {

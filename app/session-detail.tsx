@@ -174,6 +174,19 @@ export default function SessionDetailScreen() {
           </Animated.View>
         )}
 
+        {session.transcript && (
+          <Animated.View entering={FadeInDown.duration(400).delay(280)}>
+            <Text style={[styles.sectionLabel, { color: colors.textSecondary }]}>
+              Transcript
+            </Text>
+            <View style={[styles.contextCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <Text style={[styles.contextText, { color: colors.text }]}>
+                {session.transcript}
+              </Text>
+            </View>
+          </Animated.View>
+        )}
+
         {session.soapNote && (
           <Animated.View entering={FadeInDown.duration(400).delay(300)} style={styles.soapSection}>
             <View style={styles.soapLabelRow}>
@@ -196,6 +209,16 @@ export default function SessionDetailScreen() {
                 </Text>
               </Animated.View>
             ))}
+
+            {session.soapNote.followUp && (
+              <Animated.View
+                entering={FadeInDown.duration(300).delay(590)}
+                style={[styles.soapCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
+              >
+                <Text style={[styles.soapSectionTitle, { color: colors.tint }]}>Follow-Up</Text>
+                <Text style={[styles.soapText, { color: colors.text }]}>{session.soapNote.followUp}</Text>
+              </Animated.View>
+            )}
           </Animated.View>
         )}
       </ScrollView>
