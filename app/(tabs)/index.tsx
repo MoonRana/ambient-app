@@ -1,6 +1,6 @@
 import React from 'react';
 import {
-  View, Text, StyleSheet, Pressable, useColorScheme, Platform, ScrollView,
+  View, Text, StyleSheet, Pressable, Platform, ScrollView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -13,9 +13,10 @@ import Animated, {
 import { useThemeColors } from '@/constants/colors';
 import { useSessions } from '@/lib/session-context';
 import InfoCard from '@/components/InfoCard';
+import { useEffectiveColorScheme } from '@/lib/settings-context';
 
 export default function RecordTab() {
-  const colorScheme = useColorScheme();
+  const colorScheme = useEffectiveColorScheme();
   const colors = useThemeColors(colorScheme);
   const insets = useSafeAreaInsets();
   const { sessions } = useSessions();

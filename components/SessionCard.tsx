@@ -1,13 +1,15 @@
 import React from 'react';
-import { View, Text, StyleSheet, Pressable, useColorScheme } from 'react-native';
+import { View, Text, StyleSheet, Pressable } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeColors } from '@/constants/colors';
 import { AmbientSession } from '@/lib/session-context';
+import { useEffectiveColorScheme } from '@/lib/settings-context';
 
 interface SessionCardProps {
   session: AmbientSession;
   onPress: () => void;
   onDelete?: () => void;
+  onResume?: () => void;
 }
 
 function formatDuration(seconds: number): string {
@@ -40,15 +42,25 @@ function getStatusConfig(status: AmbientSession['status'], colors: ReturnType<ty
       return { label: 'Captured', color: colors.warning, icon: 'camera' as const };
     case 'reviewing':
       return { label: 'Reviewing', color: colors.tint, icon: 'document-text' as const };
+    case 'processing':
+      return { label: 'Processing', color: colors.tint, icon: 'sync-circle' as const };
     case 'completed':
       return { label: 'Completed', color: colors.accent, icon: 'checkmark-circle' as const };
+    case 'error':
+      return { label: 'Error', color: colors.recording, icon: 'alert-circle' as const };
+    default:
+      return { label: 'Unknown', color: colors.textSecondary, icon: 'help-circle' as const };
   }
 }
 
-export default function SessionCard({ session, onPress, onDelete }: SessionCardProps) {
-  const colorScheme = useColorScheme();
+export default function SessionCard({ session, onPress, onDelete, onResume }: SessionCardProps) {
+  const colorScheme = useEffectiveColorScheme();
   const colors = useThemeColors(colorScheme);
   const statusConfig = getStatusConfig(session.status, colors);
+  const isResumable = !session.soapNote &&
+    (session.status === 'error' || session.status === 'captured' ||
+      session.status === 'reviewing' || session.status === 'processing');
+  const patientName = session.patientInfo?.name || session.patientContext?.split('\n')[0]?.trim();
 
   return (
     <Pressable
@@ -76,6 +88,13 @@ export default function SessionCard({ session, onPress, onDelete }: SessionCardP
             {formatDate(session.createdAt)}
           </Text>
         </View>
+        {/* Patient name if available */}
+        {patientName && (
+          <Text style={[styles.patientName, { color: colors.text }]} numberOfLines={1}>
+            {patientName}
+          </Text>
+        )}
+
         <View style={styles.detailsRow}>
           <View style={styles.detail}>
             <Ionicons name="time-outline" size={14} color={colors.textSecondary} />
@@ -98,6 +117,16 @@ export default function SessionCard({ session, onPress, onDelete }: SessionCardP
                 SOAP Note
               </Text>
             </View>
+          )}
+          {isResumable && (
+            <Pressable
+              onPress={onResume ?? onPress}
+              style={[styles.resumePill, { backgroundColor: `${colors.tint}20` }]}
+              hitSlop={6}
+            >
+              <Ionicons name="play" size={10} color={colors.tint} />
+              <Text style={[styles.resumePillText, { color: colors.tint }]}>Resume</Text>
+            </Pressable>
           )}
         </View>
       </View>
@@ -167,5 +196,22 @@ const styles = StyleSheet.create({
   },
   deleteBtn: {
     padding: 14,
+  },
+  patientName: {
+    fontSize: 15,
+    fontFamily: 'Inter_600SemiBold',
+    marginBottom: -2,
+  },
+  resumePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 20,
+  },
+  resumePillText: {
+    fontSize: 11,
+    fontFamily: 'Inter_600SemiBold',
   },
 });

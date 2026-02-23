@@ -1,17 +1,19 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, Pressable, useColorScheme, Platform,
-  ScrollView, TextInput, ActivityIndicator, Alert,
+  View, Text, StyleSheet, Pressable, Platform,
+  ScrollView, ActivityIndicator, Alert, TextInput, AppState,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { Image } from 'expo-image';
 import * as Haptics from 'expo-haptics';
+import { useKeepAwake } from 'expo-keep-awake';
 import Animated, { FadeIn, FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { useThemeColors } from '@/constants/colors';
 import { useSessions } from '@/lib/session-context';
-import { processRecordingToSOAP, type ProcessingProgress } from '@/lib/supabase-api';
+import { processRecordingToSOAP, generateSOAPNote, analyzeInsuranceCard, type ProcessingProgress } from '@/lib/supabase-api';
+import { useEffectiveColorScheme } from '@/lib/settings-context';
 
 function formatDuration(seconds: number): string {
   const mins = Math.floor(seconds / 60);
@@ -20,7 +22,7 @@ function formatDuration(seconds: number): string {
 }
 
 const STEP_LABELS: Record<string, string> = {
-  uploading: 'Uploading Audio',
+  uploading: 'Reading Documents',
   starting: 'Starting Transcription',
   processing: 'Analyzing Audio',
   fetching: 'Retrieving Results',
@@ -30,7 +32,7 @@ const STEP_LABELS: Record<string, string> = {
 };
 
 export default function ReviewScreen() {
-  const colorScheme = useColorScheme();
+  const colorScheme = useEffectiveColorScheme();
   const colors = useThemeColors(colorScheme);
   const insets = useSafeAreaInsets();
   const { currentSession, updateSession } = useSessions();
@@ -39,6 +41,9 @@ export default function ReviewScreen() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [soapNote, setSoapNote] = useState(currentSession?.soapNote || null);
   const [processingProgress, setProcessingProgress] = useState<ProcessingProgress | null>(null);
+
+  // Keep the screen awake during the entire upload + processing flow
+  useKeepAwake();
 
   const handleGenerateNote = useCallback(async () => {
     if (!currentSession) return;
@@ -54,12 +59,61 @@ export default function ReviewScreen() {
     });
 
     if (currentSession.recordingUri) {
+      // ── Path A: Recording exists → OCR images → HealthScribe pipeline ──────
       try {
+        // Step 1: Auto-OCR any captured images first (same as no-audio path)
+        let mergedInfo = { ...currentSession.patientInfo };
+        let extractedTextParts: string[] = [];
+
+        if (currentSession.capturedImages.length > 0) {
+          setProcessingProgress({
+            step: 'uploading',
+            message: `Reading ${currentSession.capturedImages.length} document(s)...`,
+            progress: 0.05,
+          });
+
+          for (let i = 0; i < currentSession.capturedImages.length; i++) {
+            const img = currentSession.capturedImages[i];
+            try {
+              const info = await analyzeInsuranceCard(img.uri);
+              if (info.patient_name && !mergedInfo.name) mergedInfo.name = info.patient_name;
+              if (info.date_of_birth && !mergedInfo.dateOfBirth) mergedInfo.dateOfBirth = info.date_of_birth;
+              if (info.payer_name && !mergedInfo.payerName) mergedInfo.payerName = info.payer_name;
+              if (info.member_id && !mergedInfo.memberId) mergedInfo.memberId = info.member_id;
+              if (info.group_number && !mergedInfo.groupNumber) mergedInfo.groupNumber = info.group_number;
+              if (info.address && !mergedInfo.address) mergedInfo.address = info.address;
+
+              const parts = [
+                info.patient_name ? `Patient Name: ${info.patient_name}` : null,
+                info.date_of_birth ? `Date of Birth: ${info.date_of_birth}` : null,
+                info.payer_name ? `Insurance: ${info.payer_name}` : null,
+                info.member_id ? `Member ID: ${info.member_id}` : null,
+                info.group_number ? `Group: ${info.group_number}` : null,
+                info.address ? `Address: ${info.address}` : null,
+              ].filter(Boolean) as string[];
+              if (parts.length > 0) extractedTextParts.push(`[Document ${i + 1}]\n${parts.join('\n')}`);
+            } catch (e) {
+              console.warn(`OCR image ${i + 1} failed:`, e);
+            }
+          }
+
+          // Persist merged patient info before audio processing
+          updateSession(currentSession.id, { patientInfo: mergedInfo });
+        }
+
+        // Build document context block to accompany the audio transcript
+        const documentContext = extractedTextParts.length > 0
+          ? extractedTextParts.join('\n\n')
+          : undefined;
+
+        // Step 2: HealthScribe audio pipeline (with enriched patient info + doc context)
         const result = await processRecordingToSOAP(
           currentSession.recordingUri,
           currentSession.id,
           patientContext,
           (progress) => setProcessingProgress(progress),
+          mergedInfo,       // ← structured patient fields (name, DOB, insurance...)
+          documentContext,  // ← free-text from scanned documents
         );
 
         setSoapNote(result.soapNote);
@@ -68,6 +122,7 @@ export default function ReviewScreen() {
           transcript: result.transcript,
           fullNote: result.fullNote,
           patientContext,
+          patientInfo: mergedInfo,
           status: 'completed',
         });
 
@@ -92,12 +147,84 @@ export default function ReviewScreen() {
         }
       }
     } else {
-      setProcessingProgress({ step: 'generating', message: 'Generating note from context...', progress: 0.5 });
+      // ── Path B: No recording → extract images then generate ─────────────
       try {
-        const { generateSOAPNote } = await import('@/lib/supabase-api');
+        // Step 1: Auto-OCR any captured images (insurance cards, IDs, Rx labels)
+        let mergedInfo = { ...currentSession.patientInfo };
+        let extractedTextParts: string[] = [];
+
+        if (currentSession.capturedImages.length > 0) {
+          setProcessingProgress({
+            step: 'uploading',
+            message: `Extracting data from ${currentSession.capturedImages.length} document(s)...`,
+            progress: 0.1,
+          });
+
+          for (let i = 0; i < currentSession.capturedImages.length; i++) {
+            const img = currentSession.capturedImages[i];
+            setProcessingProgress({
+              step: 'uploading',
+              message: `Reading document ${i + 1} of ${currentSession.capturedImages.length}...`,
+              progress: 0.1 + (i / currentSession.capturedImages.length) * 0.4,
+            });
+            try {
+              const info = await analyzeInsuranceCard(img.uri);
+              // Merge — prefer already-filled fields
+              if (info.patient_name && !mergedInfo.name) mergedInfo.name = info.patient_name;
+              if (info.date_of_birth && !mergedInfo.dateOfBirth) mergedInfo.dateOfBirth = info.date_of_birth;
+              if (info.payer_name && !mergedInfo.payerName) mergedInfo.payerName = info.payer_name;
+              if (info.member_id && !mergedInfo.memberId) mergedInfo.memberId = info.member_id;
+              if (info.group_number && !mergedInfo.groupNumber) mergedInfo.groupNumber = info.group_number;
+              if (info.address && !mergedInfo.address) mergedInfo.address = info.address;
+
+              // Build human-readable text for the SOAP context
+              const parts = [
+                info.patient_name ? `Patient Name: ${info.patient_name}` : null,
+                info.date_of_birth ? `Date of Birth: ${info.date_of_birth}` : null,
+                info.payer_name ? `Insurance: ${info.payer_name}` : null,
+                info.member_id ? `Member ID: ${info.member_id}` : null,
+                info.group_number ? `Group: ${info.group_number}` : null,
+                info.address ? `Address: ${info.address}` : null,
+              ].filter(Boolean) as string[];
+
+              if (parts.length > 0) {
+                extractedTextParts.push(`[Document ${i + 1}]\n${parts.join('\n')}`);
+              }
+            } catch (e) {
+              console.warn(`Could not OCR image ${i + 1}:`, e);
+            }
+          }
+
+          // Persist merged patient info back to session
+          updateSession(currentSession.id, { patientInfo: mergedInfo });
+        }
+
+        setProcessingProgress({ step: 'generating', message: 'Generating SOAP note...', progress: 0.6 });
+
+        // Step 2: Build a rich context string for the LLM
+        const documentContext = extractedTextParts.length > 0
+          ? `EXTRACTED FROM SCANNED DOCUMENTS:\n\n${extractedTextParts.join('\n\n')}`
+          : '';
+
+        const fullContext = [
+          patientContext,
+          documentContext,
+        ].filter(Boolean).join('\n\n');
+
         const result = await generateSOAPNote({
           session_id: currentSession.id,
-          patient_info: patientContext ? { name: patientContext } : undefined,
+          patient_info: {
+            name: mergedInfo.name || patientContext || '',
+            date_of_birth: mergedInfo.dateOfBirth,
+            member_id: mergedInfo.memberId,
+            group_number: mergedInfo.groupNumber,
+            payer_name: mergedInfo.payerName,
+            address: mergedInfo.address,
+          },
+          // Pass extracted document text as transcript so the LLM has real data
+          transcript: fullContext || undefined,
+          medications: [],
+          diagnoses: [],
         });
 
         setSoapNote(result.sections);
@@ -105,6 +232,7 @@ export default function ReviewScreen() {
           soapNote: result.sections,
           fullNote: result.full_note,
           patientContext,
+          patientInfo: mergedInfo,
           status: 'completed',
         });
 

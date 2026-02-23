@@ -1,15 +1,17 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
-  View, Text, StyleSheet, Pressable, useColorScheme, Platform,
-  ScrollView, Alert,
+  View, Text, StyleSheet, Pressable, Platform,
+  ScrollView, Alert, Share, Clipboard,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Image } from 'expo-image';
 import Animated, { FadeInDown } from 'react-native-reanimated';
+import * as Haptics from 'expo-haptics';
 import { useThemeColors } from '@/constants/colors';
-import { useSessions } from '@/lib/session-context';
+import { useSessions, AmbientSession } from '@/lib/session-context';
+import { useEffectiveColorScheme } from '@/lib/settings-context';
 
 function formatDuration(seconds: number): string {
   const mins = Math.floor(seconds / 60);
@@ -30,12 +32,82 @@ function formatFullDate(timestamp: number): string {
   });
 }
 
+function getResumeInfo(session: AmbientSession): {
+  canResume: boolean;
+  label: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  description: string;
+  route: string;
+} {
+  if (session.soapNote) {
+    return {
+      canResume: false,
+      label: 'Note Complete',
+      icon: 'checkmark-circle',
+      description: 'SOAP note has been generated.',
+      route: '',
+    };
+  }
+  if (session.status === 'error' || session.status === 'processing') {
+    return {
+      canResume: true,
+      label: 'Retry SOAP Generation',
+      icon: 'refresh-circle',
+      description: 'Previous generation failed. Tap to retry from the review screen.',
+      route: '/(recording)/review',
+    };
+  }
+  if (session.status === 'captured' || session.status === 'reviewing') {
+    return {
+      canResume: true,
+      label: 'Resume & Generate Note',
+      icon: 'play-circle',
+      description: 'Continue from where you left off — generate the SOAP note.',
+      route: '/(recording)/review',
+    };
+  }
+  if (session.status === 'recording' || session.status === 'completed') {
+    return {
+      canResume: session.recordingUri != null,
+      label: 'Resume Encounter',
+      icon: 'arrow-forward-circle',
+      description: 'Resume this encounter and generate a SOAP note.',
+      route: '/(recording)/review',
+    };
+  }
+  return { canResume: false, label: '', icon: 'ellipse', description: '', route: '' };
+}
+
+function buildNoteText(session: AmbientSession): string {
+  if (!session.soapNote) return '';
+  const { subjective, objective, assessment, plan, followUp } = session.soapNote!;
+  const date = new Date(session.createdAt).toLocaleDateString();
+  return [
+    `SOAP NOTE — ${date}`,
+    `Patient: ${session.patientInfo?.name || session.patientContext || 'Unknown'}`,
+    '',
+    'SUBJECTIVE',
+    subjective,
+    '',
+    'OBJECTIVE',
+    objective,
+    '',
+    'ASSESSMENT',
+    assessment,
+    '',
+    'PLAN',
+    plan,
+    followUp ? `\nFOLLOW-UP\n${followUp}` : '',
+  ].join('\n').trim();
+}
+
 export default function SessionDetailScreen() {
-  const colorScheme = useColorScheme();
+  const colorScheme = useEffectiveColorScheme();
   const colors = useThemeColors(colorScheme);
   const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { getSession, deleteSession } = useSessions();
+  const { getSession, deleteSession, setCurrentSession, updateSession } = useSessions();
+  const [copied, setCopied] = useState(false);
 
   const session = id ? getSession(id) : null;
 
@@ -57,6 +129,38 @@ export default function SessionDetailScreen() {
     );
   };
 
+  const handleResume = () => {
+    if (!session) return;
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    // Reset error state so review screen starts fresh
+    if (session.status === 'error' || session.status === 'processing') {
+      updateSession(session.id, { status: 'captured', errorMessage: undefined });
+    }
+
+    setCurrentSession(getSession(session.id) ?? session);
+    router.push({ pathname: '/(recording)/review' });
+  };
+
+  const handleShare = async () => {
+    if (!session?.soapNote) return;
+    const text = buildNoteText(session);
+    try {
+      await Share.share({ message: text, title: 'SOAP Note' });
+    } catch {
+      // user cancelled
+    }
+  };
+
+  const handleCopy = () => {
+    if (!session?.soapNote) return;
+    const text = buildNoteText(session);
+    Clipboard.setString(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+    if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  };
+
   const webTopInset = Platform.OS === 'web' ? 67 : 0;
 
   if (!session) {
@@ -74,8 +178,22 @@ export default function SessionDetailScreen() {
     );
   }
 
+  const resumeInfo = getResumeInfo(session);
+  const statusColor =
+    session.status === 'completed' ? colors.accent :
+      session.status === 'error' ? colors.recording :
+        session.status === 'processing' ? colors.tint :
+          colors.warning;
+
+  const statusIcon: keyof typeof Ionicons.glyphMap =
+    session.status === 'completed' ? 'checkmark-circle' :
+      session.status === 'error' ? 'alert-circle' :
+        session.status === 'processing' ? 'sync-circle' :
+          'ellipsis-horizontal-circle';
+
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
+      {/* Header */}
       <View style={[styles.header, { paddingTop: (Platform.OS === 'web' ? webTopInset : insets.top) + 8 }]}>
         <Pressable
           onPress={() => router.back()}
@@ -87,22 +205,48 @@ export default function SessionDetailScreen() {
         >
           <Ionicons name="arrow-back" size={22} color={colors.text} />
         </Pressable>
-        <Pressable
-          onPress={handleDelete}
-          hitSlop={12}
-          style={({ pressed }) => [
-            styles.headerBtn,
-            { backgroundColor: colors.recordingLight, opacity: pressed ? 0.7 : 1 },
-          ]}
-        >
-          <Ionicons name="trash-outline" size={20} color={colors.recording} />
-        </Pressable>
+        <View style={styles.headerActions}>
+          {session.soapNote && (
+            <>
+              <Pressable
+                onPress={handleCopy}
+                hitSlop={12}
+                style={({ pressed }) => [
+                  styles.headerBtn,
+                  { backgroundColor: colors.surfaceSecondary, opacity: pressed ? 0.7 : 1 },
+                ]}
+              >
+                <Ionicons name={copied ? 'checkmark' : 'copy-outline'} size={20} color={copied ? colors.accent : colors.text} />
+              </Pressable>
+              <Pressable
+                onPress={handleShare}
+                hitSlop={12}
+                style={({ pressed }) => [
+                  styles.headerBtn,
+                  { backgroundColor: colors.surfaceSecondary, opacity: pressed ? 0.7 : 1 },
+                ]}
+              >
+                <Ionicons name="share-outline" size={20} color={colors.text} />
+              </Pressable>
+            </>
+          )}
+          <Pressable
+            onPress={handleDelete}
+            hitSlop={12}
+            style={({ pressed }) => [
+              styles.headerBtn,
+              { backgroundColor: colors.recordingLight, opacity: pressed ? 0.7 : 1 },
+            ]}
+          >
+            <Ionicons name="trash-outline" size={20} color={colors.recording} />
+          </Pressable>
+        </View>
       </View>
 
       <ScrollView
         contentContainerStyle={[
           styles.scrollContent,
-          { paddingBottom: Platform.OS === 'web' ? 34 : Math.max(insets.bottom, 16) + 16 },
+          { paddingBottom: Platform.OS === 'web' ? 34 : Math.max(insets.bottom, 16) + 30 },
         ]}
         showsVerticalScrollIndicator={false}
       >
@@ -113,8 +257,9 @@ export default function SessionDetailScreen() {
           <Text style={[styles.title, { color: colors.text }]}>Session Details</Text>
         </Animated.View>
 
+        {/* Stats */}
         <Animated.View entering={FadeInDown.duration(400).delay(100)}>
-          <View style={[styles.statsRow]}>
+          <View style={styles.statsRow}>
             <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
               <Ionicons name="time" size={22} color={colors.tint} />
               <Text style={[styles.statValue, { color: colors.text }]}>
@@ -130,11 +275,7 @@ export default function SessionDetailScreen() {
               <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Documents</Text>
             </View>
             <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              <Ionicons
-                name={session.status === 'completed' ? 'checkmark-circle' : 'ellipsis-horizontal-circle'}
-                size={22}
-                color={session.status === 'completed' ? colors.accent : colors.warning}
-              />
+              <Ionicons name={statusIcon} size={22} color={statusColor} />
               <Text style={[styles.statValue, { color: colors.text, fontSize: 13 }]}>
                 {session.status.charAt(0).toUpperCase() + session.status.slice(1)}
               </Text>
@@ -143,9 +284,62 @@ export default function SessionDetailScreen() {
           </View>
         </Animated.View>
 
+        {/* Error message banner */}
+        {session.errorMessage && (
+          <Animated.View
+            entering={FadeInDown.duration(400).delay(120)}
+            style={[styles.errorBanner, { backgroundColor: colors.recordingLight, borderColor: colors.recording }]}
+          >
+            <Ionicons name="alert-circle-outline" size={16} color={colors.recording} />
+            <Text style={[styles.errorBannerText, { color: colors.recording }]}>{session.errorMessage}</Text>
+          </Animated.View>
+        )}
+
+        {/* ── Resume Encounter CTA ── */}
+        {resumeInfo.canResume && (
+          <Animated.View entering={FadeInDown.duration(400).delay(130)}>
+            <Pressable
+              onPress={handleResume}
+              style={({ pressed }) => [
+                styles.resumeBtn,
+                { backgroundColor: colors.tint, opacity: pressed ? 0.88 : 1 },
+              ]}
+            >
+              <Ionicons name={resumeInfo.icon} size={22} color="#fff" />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.resumeBtnTitle}>{resumeInfo.label}</Text>
+                <Text style={styles.resumeBtnSub}>{resumeInfo.description}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color="rgba(255,255,255,0.7)" />
+            </Pressable>
+          </Animated.View>
+        )}
+
+        {/* Patient Info */}
+        {session.patientInfo && (session.patientInfo.name || session.patientInfo.memberId) && (
+          <Animated.View entering={FadeInDown.duration(400).delay(160)}>
+            <Text style={[styles.sectionLabel, { color: colors.textTertiary }]}>Patient</Text>
+            <View style={[styles.infoCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              {session.patientInfo.name && (
+                <InfoRow icon="person-outline" label="Name" value={session.patientInfo.name} colors={colors} />
+              )}
+              {session.patientInfo.dateOfBirth && (
+                <InfoRow icon="calendar-outline" label="DOB" value={session.patientInfo.dateOfBirth} colors={colors} />
+              )}
+              {session.patientInfo.payerName && (
+                <InfoRow icon="business-outline" label="Insurance" value={session.patientInfo.payerName} colors={colors} />
+              )}
+              {session.patientInfo.memberId && (
+                <InfoRow icon="card-outline" label="Member ID" value={session.patientInfo.memberId} colors={colors} />
+              )}
+            </View>
+          </Animated.View>
+        )}
+
+        {/* Captured Images */}
         {session.capturedImages.length > 0 && (
           <Animated.View entering={FadeInDown.duration(400).delay(200)}>
-            <Text style={[styles.sectionLabel, { color: colors.textSecondary }]}>
+            <Text style={[styles.sectionLabel, { color: colors.textTertiary }]}>
               Captured Documents
             </Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
@@ -161,10 +355,11 @@ export default function SessionDetailScreen() {
           </Animated.View>
         )}
 
+        {/* Patient Context */}
         {session.patientContext && (
           <Animated.View entering={FadeInDown.duration(400).delay(250)}>
-            <Text style={[styles.sectionLabel, { color: colors.textSecondary }]}>
-              Patient Context
+            <Text style={[styles.sectionLabel, { color: colors.textTertiary }]}>
+              Notes / Context
             </Text>
             <View style={[styles.contextCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
               <Text style={[styles.contextText, { color: colors.text }]}>
@@ -174,11 +369,10 @@ export default function SessionDetailScreen() {
           </Animated.View>
         )}
 
+        {/* Transcript */}
         {session.transcript && (
           <Animated.View entering={FadeInDown.duration(400).delay(280)}>
-            <Text style={[styles.sectionLabel, { color: colors.textSecondary }]}>
-              Transcript
-            </Text>
+            <Text style={[styles.sectionLabel, { color: colors.textTertiary }]}>Transcript</Text>
             <View style={[styles.contextCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
               <Text style={[styles.contextText, { color: colors.text }]}>
                 {session.transcript}
@@ -187,11 +381,12 @@ export default function SessionDetailScreen() {
           </Animated.View>
         )}
 
+        {/* SOAP Note */}
         {session.soapNote && (
           <Animated.View entering={FadeInDown.duration(400).delay(300)} style={styles.soapSection}>
             <View style={styles.soapLabelRow}>
               <Ionicons name="document-text" size={18} color={colors.accent} />
-              <Text style={[styles.sectionLabel, { color: colors.textSecondary, marginBottom: 0 }]}>
+              <Text style={[styles.sectionLabel, { color: colors.textTertiary, marginBottom: 0 }]}>
                 SOAP Note
               </Text>
             </View>
@@ -226,10 +421,23 @@ export default function SessionDetailScreen() {
   );
 }
 
+function InfoRow({ icon, label, value, colors }: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  value: string;
+  colors: any;
+}) {
+  return (
+    <View style={styles.infoRow}>
+      <Ionicons name={icon} size={15} color={colors.textTertiary} />
+      <Text style={[styles.infoLabel, { color: colors.textTertiary }]}>{label}</Text>
+      <Text style={[styles.infoValue, { color: colors.text }]} numberOfLines={1}>{value}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
+  container: { flex: 1 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -237,103 +445,77 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingBottom: 12,
   },
-  headerBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+  headerActions: {
+    flexDirection: 'row',
+    gap: 8,
     alignItems: 'center',
-    justifyContent: 'center',
+  },
+  headerBtn: {
+    width: 36, height: 36, borderRadius: 18,
+    alignItems: 'center', justifyContent: 'center',
   },
   scrollContent: {
-    paddingHorizontal: 24,
-    gap: 24,
+    paddingHorizontal: 20,
+    gap: 20,
+    paddingTop: 4,
   },
-  dateText: {
-    fontSize: 13,
-    fontFamily: 'Inter_400Regular',
-  },
-  title: {
-    fontSize: 24,
-    fontFamily: 'Inter_700Bold',
-    marginTop: 4,
-  },
-  statsRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
+  dateText: { fontSize: 13, fontFamily: 'Inter_400Regular' },
+  title: { fontSize: 24, fontFamily: 'Inter_700Bold', marginTop: 4 },
+  statsRow: { flexDirection: 'row', gap: 10 },
   statCard: {
-    flex: 1,
-    padding: 14,
-    borderRadius: 14,
-    borderWidth: 1,
-    alignItems: 'center',
-    gap: 6,
+    flex: 1, padding: 14, borderRadius: 14,
+    borderWidth: 1, alignItems: 'center', gap: 6,
   },
-  statValue: {
-    fontSize: 18,
-    fontFamily: 'Inter_700Bold',
+  statValue: { fontSize: 18, fontFamily: 'Inter_700Bold' },
+  statLabel: { fontSize: 11, fontFamily: 'Inter_400Regular' },
+
+  errorBanner: {
+    flexDirection: 'row', alignItems: 'flex-start',
+    gap: 8, padding: 12, borderRadius: 12, borderWidth: 1,
   },
-  statLabel: {
-    fontSize: 11,
-    fontFamily: 'Inter_400Regular',
+  errorBannerText: { flex: 1, fontSize: 13, fontFamily: 'Inter_400Regular', lineHeight: 18 },
+
+  resumeBtn: {
+    flexDirection: 'row', alignItems: 'center',
+    gap: 12, padding: 16, borderRadius: 16,
   },
+  resumeBtnTitle: {
+    fontSize: 16, fontFamily: 'Inter_700Bold', color: '#fff',
+  },
+  resumeBtnSub: {
+    fontSize: 12, fontFamily: 'Inter_400Regular',
+    color: 'rgba(255,255,255,0.75)', marginTop: 2,
+  },
+
+  infoCard: { borderRadius: 14, borderWidth: 1, overflow: 'hidden' },
+  infoRow: {
+    flexDirection: 'row', alignItems: 'center',
+    gap: 10, paddingHorizontal: 14, paddingVertical: 11,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  infoLabel: { fontSize: 12, fontFamily: 'Inter_500Medium', width: 72 },
+  infoValue: { flex: 1, fontSize: 13, fontFamily: 'Inter_400Regular' },
+
   sectionLabel: {
-    fontSize: 13,
-    fontFamily: 'Inter_600SemiBold',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    marginBottom: 10,
+    fontSize: 12, fontFamily: 'Inter_600SemiBold',
+    textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8,
   },
   docImage: {
-    width: 100,
-    height: 100,
-    borderRadius: 12,
-    borderWidth: 1,
-    marginRight: 10,
+    width: 100, height: 100, borderRadius: 12,
+    borderWidth: 1, marginRight: 10,
   },
-  contextCard: {
-    borderRadius: 14,
-    borderWidth: 1,
-    padding: 14,
-  },
-  contextText: {
-    fontSize: 14,
-    fontFamily: 'Inter_400Regular',
-    lineHeight: 21,
-  },
-  soapSection: {
-    gap: 12,
-  },
+  contextCard: { borderRadius: 14, borderWidth: 1, padding: 14 },
+  contextText: { fontSize: 14, fontFamily: 'Inter_400Regular', lineHeight: 21 },
+  soapSection: { gap: 12 },
   soapLabelRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 2,
+    flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2,
   },
-  soapCard: {
-    borderRadius: 14,
-    borderWidth: 1,
-    padding: 16,
-    gap: 8,
-  },
+  soapCard: { borderRadius: 14, borderWidth: 1, padding: 16, gap: 8 },
   soapSectionTitle: {
-    fontSize: 12,
-    fontFamily: 'Inter_700Bold',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
+    fontSize: 12, fontFamily: 'Inter_700Bold',
+    textTransform: 'uppercase', letterSpacing: 1,
   },
-  soapText: {
-    fontSize: 14,
-    fontFamily: 'Inter_400Regular',
-    lineHeight: 21,
-  },
-  emptyState: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  emptyText: {
-    fontSize: 16,
-    fontFamily: 'Inter_400Regular',
-  },
+  soapText: { fontSize: 14, fontFamily: 'Inter_400Regular', lineHeight: 21 },
+  emptyState: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  emptyText: { fontSize: 16, fontFamily: 'Inter_400Regular' },
 });

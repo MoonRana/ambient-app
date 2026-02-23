@@ -19,7 +19,7 @@ export type ErrorFallbackProps = {
 };
 
 export function ErrorFallback({ error, resetError }: ErrorFallbackProps) {
-  const colorScheme = useColorScheme();
+  const colorScheme = useColorScheme(); // ErrorFallback may render outside SettingsProvider, keep system fallback
   const isDark = colorScheme === "dark";
   const insets = useSafeAreaInsets();
 

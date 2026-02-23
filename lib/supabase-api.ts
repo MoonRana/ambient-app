@@ -1,24 +1,50 @@
 import { supabase } from './supabase';
+import { AmbientSession } from './session-context';
 import { Platform } from 'react-native';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as ImageManipulator from 'expo-image-manipulator';
 
 const POLLING_INTERVAL = 5000;
-const MAX_ATTEMPTS = 60;
+const MAX_ATTEMPTS = 120; // 10 minutes total (120 * 5s)
 
 function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Default 120s for most edge function calls; audio upload uses 300s
+async function fetchWithTimeout(url: string, options: any, timeout = 120000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    clearTimeout(id);
+    return response;
+  } catch (error: any) {
+    clearTimeout(id);
+    // Give a clearer error message for timeouts vs network failures
+    if (error.name === 'AbortError') {
+      throw new Error('Request timed out. Please check your internet connection and try again.');
+    }
+    throw new Error(`Network request failed: ${error.message || 'Unknown error'}. Check your internet connection.`);
+  }
+}
+
 async function getAuthHeaders() {
+  const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
   const { data: { session } } = await supabase.auth.getSession();
-  const token = session?.access_token || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
+  const token = session?.access_token || anonKey;
   return {
     'Authorization': `Bearer ${token}`,
+    'apikey': anonKey,           // Required by Supabase Edge Functions
     'Content-Type': 'application/json',
   };
 }
 
 function getBaseUrl() {
-  return process.env.EXPO_PUBLIC_SUPABASE_URL || '';
+  return (process.env.EXPO_PUBLIC_SUPABASE_URL || '').replace(/\/$/, '');
 }
 
 export async function uploadAudioToS3(audioUri: string, sessionId: string): Promise<{
@@ -43,16 +69,16 @@ export async function uploadAudioToS3(audioUri: string, sessionId: string): Prom
       reader.readAsDataURL(blob);
     });
   } else {
-    const FileSystem = await import('expo-file-system');
     audioBase64 = await FileSystem.readAsStringAsync(audioUri, {
-      encoding: 'base64',
+      encoding: FileSystem.EncodingType.Base64,
     });
   }
 
   const headers = await getAuthHeaders();
   const contentType = audioUri.endsWith('.webm') ? 'audio/webm' : 'audio/m4a';
 
-  const response = await fetch(`${getBaseUrl()}/functions/v1/upload-audio-to-s3`, {
+  // Audio files can be large — allow up to 5 minutes for upload
+  const response = await fetchWithTimeout(`${getBaseUrl()}/functions/v1/upload-audio-to-s3`, {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -60,7 +86,7 @@ export async function uploadAudioToS3(audioUri: string, sessionId: string): Prom
       content_type: contentType,
       session_id: sessionId,
     }),
-  });
+  }, 300000); // 5 minute timeout for audio upload
 
   const data = await response.json();
   if (!response.ok) {
@@ -77,7 +103,7 @@ export async function startHealthScribeJob(sessionId: string, audioS3Uri: string
 }> {
   const headers = await getAuthHeaders();
 
-  const response = await fetch(`${getBaseUrl()}/functions/v1/start-healthscribe-job`, {
+  const response = await fetchWithTimeout(`${getBaseUrl()}/functions/v1/start-healthscribe-job`, {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -102,7 +128,7 @@ export async function getHealthScribeStatus(jobName: string): Promise<{
 }> {
   const headers = await getAuthHeaders();
 
-  const response = await fetch(`${getBaseUrl()}/functions/v1/get-healthscribe-status`, {
+  const response = await fetchWithTimeout(`${getBaseUrl()}/functions/v1/get-healthscribe-status`, {
     method: 'POST',
     headers,
     body: JSON.stringify({ job_name: jobName }),
@@ -134,7 +160,7 @@ export async function fetchHealthScribeResults(transcriptUri: string, clinicalUr
 }> {
   const headers = await getAuthHeaders();
 
-  const response = await fetch(`${getBaseUrl()}/functions/v1/fetch-healthscribe-results`, {
+  const response = await fetchWithTimeout(`${getBaseUrl()}/functions/v1/fetch-healthscribe-results`, {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -185,7 +211,7 @@ export async function generateSOAPNote(params: {
 }> {
   const headers = await getAuthHeaders();
 
-  const response = await fetch(`${getBaseUrl()}/functions/v1/generate-soap-note`, {
+  const response = await fetchWithTimeout(`${getBaseUrl()}/functions/v1/generate-soap-note`, {
     method: 'POST',
     headers,
     body: JSON.stringify(params),
@@ -196,6 +222,112 @@ export async function generateSOAPNote(params: {
     throw new Error(data.error || 'Failed to generate SOAP note');
   }
   return data;
+}
+
+export async function analyzeInsuranceCard(imageUri: string): Promise<{
+  member_id?: string;
+  group_number?: string;
+  payer_name?: string;
+  patient_name?: string;
+  address?: string;
+  date_of_birth?: string;
+  confidence?: number;
+}> {
+  let imageBase64: string;
+  let mimeType = 'image/jpeg';
+
+  if (Platform.OS === 'web') {
+    const response = await fetch(imageUri);
+    const blob = await response.blob();
+    // On web resize via canvas to keep payload small
+    imageBase64 = await new Promise<string>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 1200;
+        let { width, height } = img;
+        if (width > MAX || height > MAX) {
+          if (width > height) { height = Math.round(height * MAX / width); width = MAX; }
+          else { width = Math.round(width * MAX / height); height = MAX; }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        const ctx = canvas.getContext('2d')!;
+        ctx.drawImage(img, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+        resolve(dataUrl.split(',')[1]);
+      };
+      img.onerror = reject;
+      img.src = URL.createObjectURL(blob);
+    });
+  } else {
+    // Native: resize to max 1200px wide and compress to JPEG 70% before encoding
+    try {
+      const manipulated = await ImageManipulator.manipulateAsync(
+        imageUri,
+        [{ resize: { width: 1200 } }],
+        { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
+      );
+      imageBase64 = await FileSystem.readAsStringAsync(manipulated.uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+    } catch {
+      // Fallback: read original if manipulator fails
+      imageBase64 = await FileSystem.readAsStringAsync(imageUri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+    }
+  }
+
+  // Sanity check — warn if still large (Claude limit ~5MB base64)
+  console.log('[analyzeInsuranceCard] Image base64 length:', imageBase64.length, 'chars (~', Math.round(imageBase64.length * 0.75 / 1024), 'KB raw)');
+  if (imageBase64.length > 4_000_000) {
+    console.warn('[analyzeInsuranceCard] Image still very large after resize:', imageBase64.length, 'chars');
+  }
+
+  const headers = await getAuthHeaders();
+
+  const response = await fetchWithTimeout(`${getBaseUrl()}/functions/v1/extract-document-info`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      image_base64: imageBase64,
+      mime_type: mimeType,
+      document_type: 'insurance',
+      side: 'front',
+    }),
+  });
+
+  const rawText = await response.text();
+  console.log('[analyzeInsuranceCard] HTTP status:', response.status);
+  console.log('[analyzeInsuranceCard] Raw response:', rawText.slice(0, 500));
+
+  let data: any;
+  try { data = JSON.parse(rawText); } catch { data = { error: rawText }; }
+
+  if (!response.ok) {
+    // The function wraps Anthropic errors — try multiple paths
+    const errMsg =
+      data.error ||
+      data.message ||
+      data?.details?.error?.message ||
+      data?.error_message ||
+      `HTTP ${response.status}: ${rawText.slice(0, 200)}`;
+    console.error('[analyzeInsuranceCard] Error detail:', JSON.stringify(data));
+    throw new Error(errMsg);
+  }
+
+  // Edge function returns { type, side, data: { ...fields }, confidence }
+  // Normalise both flat and nested shapes
+  const fields = data.data ?? data;
+  return {
+    member_id: fields.member_id ?? fields.memberId,
+    group_number: fields.group_number ?? fields.groupNumber,
+    payer_name: fields.payer_name ?? fields.payerName ?? fields.insurance_company ?? fields.insuranceCompany,
+    patient_name: fields.patient_name ?? fields.patientName ?? fields.name,
+    address: fields.address,
+    date_of_birth: fields.date_of_birth ?? fields.dateOfBirth ?? fields.dob,
+    confidence: data.confidence,
+  };
 }
 
 export type ProcessingStep = 'uploading' | 'starting' | 'processing' | 'fetching' | 'generating' | 'complete' | 'error';
@@ -211,6 +343,8 @@ export async function processRecordingToSOAP(
   sessionId: string,
   patientContext: string,
   onProgress: (progress: ProcessingProgress) => void,
+  patientInfo?: AmbientSession['patientInfo'],
+  documentContext?: string,   // ← free-text OCR block from scanned documents
 ): Promise<{
   soapNote: {
     subjective: string;
@@ -240,17 +374,21 @@ export async function processRecordingToSOAP(
     let status = await getHealthScribeStatus(job.job_name);
 
     while (status.status !== 'COMPLETED' && status.status !== 'FAILED' && attempts < MAX_ATTEMPTS) {
+      console.log(`[HealthScribe] Polling attempt ${attempts + 1}/${MAX_ATTEMPTS}. Status: ${status.status}`);
       await sleep(POLLING_INTERVAL);
       status = await getHealthScribeStatus(job.job_name);
       attempts++;
 
       const pollProgress = Math.min(0.3 + (attempts / MAX_ATTEMPTS) * 0.4, 0.7);
+      console.log(`[HealthScribe] Progress: ${Math.round(pollProgress * 100)}%`);
       onProgress({
         step: 'processing',
         message: status.status === 'IN_PROGRESS' ? 'Processing transcription...' : 'Waiting in queue...',
         progress: pollProgress,
       });
     }
+
+    console.log(`[HealthScribe] Final status: ${status.status} after ${attempts} attempts`);
 
     if (status.status === 'FAILED') {
       throw new Error(status.failure_reason || 'Transcription failed');
@@ -269,11 +407,28 @@ export async function processRecordingToSOAP(
 
     onProgress({ step: 'generating', message: 'Generating SOAP note...', progress: 0.85 });
 
+    // Assemble the full transcript: prepend document context if available
+    const baseTranscript = results.transcript.formatted;
+    const fullTranscript = documentContext
+      ? `PATIENT DOCUMENTS (scanned):\n${documentContext}\n\n---\n\nENCOUNTER TRANSCRIPT:\n${baseTranscript}`
+      : baseTranscript;
+
+    console.log('[processRecordingToSOAP] transcript length:', fullTranscript.length, 'hasDocCtx:', !!documentContext);
+
     const soapResult = await generateSOAPNote({
       session_id: sessionId,
-      patient_info: patientContext ? { name: patientContext } : undefined,
-      transcript: results.transcript.formatted,
+      patient_info: {
+        name: patientInfo?.name || patientContext || '',
+        date_of_birth: patientInfo?.dateOfBirth,   // ← was missing
+        member_id: patientInfo?.memberId,
+        group_number: patientInfo?.groupNumber,
+        payer_name: patientInfo?.payerName,
+        address: patientInfo?.address,
+      },
+      transcript: fullTranscript,
       healthscribe_summary: results.summary,
+      medications: [],
+      diagnoses: [],
     });
 
     onProgress({ step: 'complete', message: 'Complete!', progress: 1.0 });

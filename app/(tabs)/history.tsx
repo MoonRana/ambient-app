@@ -1,6 +1,6 @@
 import React from 'react';
 import {
-  View, Text, StyleSheet, FlatList, useColorScheme, Platform, Alert,
+  View, Text, StyleSheet, FlatList, Platform, Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,18 +9,28 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { useThemeColors } from '@/constants/colors';
 import { useSessions, AmbientSession } from '@/lib/session-context';
 import SessionCard from '@/components/SessionCard';
+import { useEffectiveColorScheme } from '@/lib/settings-context';
 
 export default function HistoryTab() {
-  const colorScheme = useColorScheme();
+  const colorScheme = useEffectiveColorScheme();
   const colors = useThemeColors(colorScheme);
   const insets = useSafeAreaInsets();
-  const { sessions, deleteSession, setCurrentSession } = useSessions();
+  const { sessions, deleteSession, setCurrentSession, updateSession } = useSessions();
 
   const webTopInset = Platform.OS === 'web' ? 67 : 0;
 
   const handleSessionPress = (session: AmbientSession) => {
     setCurrentSession(session);
     router.push({ pathname: '/session-detail', params: { id: session.id } });
+  };
+
+  const handleResumeSession = (session: AmbientSession) => {
+    // Reset error state before resuming so review screen starts fresh
+    if (session.status === 'error' || session.status === 'processing') {
+      updateSession(session.id, { status: 'captured', errorMessage: undefined });
+    }
+    setCurrentSession(session);
+    router.push({ pathname: '/(recording)/review' });
   };
 
   const handleDeleteSession = (session: AmbientSession) => {
@@ -44,6 +54,7 @@ export default function HistoryTab() {
         session={item}
         onPress={() => handleSessionPress(item)}
         onDelete={() => handleDeleteSession(item)}
+        onResume={() => handleResumeSession(item)}
       />
     </Animated.View>
   );

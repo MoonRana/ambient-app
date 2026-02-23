@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useColorScheme } from 'react-native';
 
 interface SettingsContextValue {
   autoSave: boolean;
@@ -9,6 +10,8 @@ interface SettingsContextValue {
   hapticFeedback: boolean;
   setHapticFeedback: (v: boolean) => void;
   sessionCount: number;
+  themePreference: 'system' | 'light' | 'dark';
+  setThemePreference: (v: 'system' | 'light' | 'dark') => void;
 }
 
 const SettingsContext = createContext<SettingsContextValue | null>(null);
@@ -20,6 +23,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const [highQualityAudio, setHighQualityAudio] = useState(true);
   const [hapticFeedback, setHapticFeedback] = useState(true);
   const [sessionCount, setSessionCount] = useState(0);
+  const [themePreference, setThemePreference] = useState<'system' | 'light' | 'dark'>('system');
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
@@ -30,7 +34,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     if (loaded) {
       saveSettings();
     }
-  }, [autoSave, highQualityAudio, hapticFeedback]);
+  }, [autoSave, highQualityAudio, hapticFeedback, themePreference]);
 
   const loadSettings = async () => {
     try {
@@ -41,6 +45,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         setHighQualityAudio(parsed.highQualityAudio ?? true);
         setHapticFeedback(parsed.hapticFeedback ?? true);
         setSessionCount(parsed.sessionCount ?? 0);
+        setThemePreference(parsed.themePreference ?? 'system');
       }
     } catch (e) {
       console.error('Failed to load settings', e);
@@ -56,6 +61,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         highQualityAudio,
         hapticFeedback,
         sessionCount,
+        themePreference,
       }));
     } catch (e) {
       console.error('Failed to save settings', e);
@@ -70,7 +76,9 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     hapticFeedback,
     setHapticFeedback,
     sessionCount,
-  }), [autoSave, highQualityAudio, hapticFeedback, sessionCount]);
+    themePreference,
+    setThemePreference,
+  }), [autoSave, highQualityAudio, hapticFeedback, sessionCount, themePreference]);
 
   return (
     <SettingsContext.Provider value={value}>
@@ -85,4 +93,17 @@ export function useSettings() {
     throw new Error('useSettings must be used within a SettingsProvider');
   }
   return context;
+}
+
+export function useEffectiveColorScheme(): 'light' | 'dark' {
+  const systemScheme = useColorScheme();
+  let themePreference: 'system' | 'light' | 'dark' = 'system';
+  try {
+    const context = useContext(SettingsContext);
+    if (context) themePreference = context.themePreference;
+  } catch {
+    // outside of provider, fall back to system
+  }
+  if (themePreference === 'system') return systemScheme ?? 'light';
+  return themePreference;
 }

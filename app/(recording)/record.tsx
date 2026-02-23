@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, Pressable, useColorScheme, Platform,
+  View, Text, StyleSheet, Pressable, Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -13,11 +13,13 @@ import { useThemeColors } from '@/constants/colors';
 import { useSessions } from '@/lib/session-context';
 import RecordButton from '@/components/RecordButton';
 import WaveformVisualizer from '@/components/WaveformVisualizer';
+import { useEffectiveColorScheme } from '@/lib/settings-context';
+import { playRecordingStart, playRecordingStop } from '@/lib/recording-sounds';
 
 type RecordingState = 'idle' | 'recording' | 'paused';
 
 export default function RecordScreen() {
-  const colorScheme = useColorScheme();
+  const colorScheme = useEffectiveColorScheme();
   const colors = useThemeColors(colorScheme);
   const insets = useSafeAreaInsets();
   const { currentSession, updateSession } = useSessions();
@@ -31,6 +33,12 @@ export default function RecordScreen() {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
       deactivateKeepAwake();
+      // Ensure any active recording is unloaded when the screen unmounts
+      // (e.g. navigating away, hot-reload) so the next mount can start fresh.
+      if (recordingRef.current) {
+        recordingRef.current.stopAndUnloadAsync().catch(() => { });
+        recordingRef.current = null;
+      }
     };
   }, []);
 
@@ -49,6 +57,32 @@ export default function RecordScreen() {
 
   const startRecording = async () => {
     try {
+      // Guard: unload any stale recording left from a previous session
+      if (recordingRef.current) {
+        try {
+          await recordingRef.current.stopAndUnloadAsync();
+        } catch {
+          // Ignore — it may already be unloaded
+        }
+        recordingRef.current = null;
+      }
+
+      // ── Haptics: triple heavy pulse signals recording start ──
+      if (Platform.OS !== 'web') {
+        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+        await new Promise(r => setTimeout(r, 80));
+        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+        await new Promise(r => setTimeout(r, 80));
+        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+      }
+
+      // ── Tone: ascending double-chirp ──
+      // Play tone BEFORE switching audio mode to recording so it can be heard
+      await playRecordingStart();
+
+      // Small delay so tone finishes before mic opens
+      await new Promise(r => setTimeout(r, 250));
+
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
@@ -62,11 +96,7 @@ export default function RecordScreen() {
       setElapsed(0);
       startTimer();
 
-      try { await activateKeepAwakeAsync(); } catch {}
-
-      if (Platform.OS !== 'web') {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      }
+      try { await activateKeepAwakeAsync(); } catch { }
     } catch (err) {
       console.error('Failed to start recording', err);
     }
@@ -79,7 +109,8 @@ export default function RecordScreen() {
         setRecordingState('paused');
         stopTimer();
         if (Platform.OS !== 'web') {
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          // Single medium pulse for pause
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         }
       }
     } catch (err) {
@@ -94,7 +125,10 @@ export default function RecordScreen() {
         setRecordingState('recording');
         startTimer();
         if (Platform.OS !== 'web') {
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          // Double light pulse for resume
+          await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          await new Promise(r => setTimeout(r, 70));
+          await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         }
       }
     } catch (err) {
@@ -121,9 +155,15 @@ export default function RecordScreen() {
           });
         }
 
+        // ── Haptics: double heavy pulse signals recording end ──
         if (Platform.OS !== 'web') {
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+          await new Promise(r => setTimeout(r, 100));
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         }
+
+        // ── Tone: descending tone ── (plays after mic is released)
+        playRecordingStop();
 
         router.push('/(recording)/capture');
       }
@@ -144,7 +184,7 @@ export default function RecordScreen() {
 
   const handleCancel = () => {
     if (recordingRef.current) {
-      recordingRef.current.stopAndUnloadAsync().catch(() => {});
+      recordingRef.current.stopAndUnloadAsync().catch(() => { });
       recordingRef.current = null;
     }
     stopTimer();
@@ -192,11 +232,11 @@ export default function RecordScreen() {
           <Text style={[styles.stateLabel, {
             color: recordingState === 'recording' ? colors.recording
               : recordingState === 'paused' ? colors.warning
-              : colors.textSecondary,
+                : colors.textSecondary,
           }]}>
             {recordingState === 'recording' ? 'Recording'
               : recordingState === 'paused' ? 'Paused'
-              : 'Ready to Record'}
+                : 'Ready to Record'}
           </Text>
           <Text style={[styles.timer, { color: colors.text }]}>
             {formatTime(elapsed)}
@@ -258,8 +298,8 @@ export default function RecordScreen() {
             {recordingState === 'idle'
               ? 'Tap the button to begin recording'
               : recordingState === 'recording'
-              ? 'Tap stop when the encounter is complete'
-              : 'Tap to stop or resume recording'}
+                ? 'Tap stop when the encounter is complete'
+                : 'Tap to stop or resume recording'}
           </Text>
         </Animated.View>
       </View>

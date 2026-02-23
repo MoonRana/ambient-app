@@ -3,9 +3,10 @@ import { Tabs } from "expo-router";
 import { NativeTabs, Icon, Label } from "expo-router/unstable-native-tabs";
 import { BlurView } from "expo-blur";
 import { Ionicons } from "@expo/vector-icons";
-import { Platform, StyleSheet, useColorScheme, View } from "react-native";
+import { Platform, StyleSheet, View } from "react-native";
 import React from "react";
 import { useThemeColors } from "@/constants/colors";
+import { useEffectiveColorScheme } from "@/lib/settings-context";
 
 function NativeTabLayout() {
   return (
@@ -27,9 +28,9 @@ function NativeTabLayout() {
 }
 
 function ClassicTabLayout() {
-  const colorScheme = useColorScheme();
+  const colorScheme = useEffectiveColorScheme();
   const colors = useThemeColors(colorScheme);
-  const isDark = colorScheme === "dark";
+  const isDark = colorScheme === 'dark';
   const isWeb = Platform.OS === "web";
   const isIOS = Platform.OS === "ios";
 

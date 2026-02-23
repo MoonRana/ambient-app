@@ -45,6 +45,7 @@ const Colors = {
 
 export default Colors;
 
-export function useThemeColors(colorScheme: "light" | "dark" | null | undefined) {
-  return colorScheme === "dark" ? Colors.dark : Colors.light;
+export function useThemeColors(colorScheme: 'light' | 'dark' | null | undefined) {
+  return colorScheme === 'dark' ? Colors.dark : Colors.light;
 }
+

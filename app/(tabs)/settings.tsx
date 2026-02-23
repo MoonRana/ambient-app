@@ -6,8 +6,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useThemeColors } from '@/constants/colors';
-import { useSettings } from '@/lib/settings-context';
+import { useSettings, useEffectiveColorScheme } from '@/lib/settings-context';
 import { useSessions } from '@/lib/session-context';
+import { useAuth } from '@/lib/auth-context';
 
 function SettingRow({
   icon,
@@ -67,11 +68,26 @@ function SettingRow({
 }
 
 export default function SettingsTab() {
-  const colorScheme = useColorScheme();
-  const colors = useThemeColors(colorScheme);
+  const { themePreference, setThemePreference } = useSettings();
+  const effectiveScheme = useEffectiveColorScheme();
+  const colors = useThemeColors(effectiveScheme);
   const insets = useSafeAreaInsets();
   const settings = useSettings();
   const { sessions } = useSessions();
+  const { user, signOut } = useAuth();
+
+  const handleSignOut = () => {
+    Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Sign Out', style: 'destructive', onPress: signOut },
+    ]);
+  };
+
+  const themeOptions: Array<{ label: string; value: 'system' | 'light' | 'dark'; icon: keyof typeof Ionicons.glyphMap }> = [
+    { label: 'System', value: 'system', icon: 'phone-portrait-outline' },
+    { label: 'Light', value: 'light', icon: 'sunny-outline' },
+    { label: 'Dark', value: 'dark', icon: 'moon-outline' },
+  ];
 
   const webTopInset = Platform.OS === 'web' ? 67 : 0;
 
@@ -106,6 +122,71 @@ export default function SettingsTab() {
       >
         <Text style={[styles.title, { color: colors.text }]}>Settings</Text>
 
+        {/* Account */}
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>Account</Text>
+          <View style={[styles.sectionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <SettingRow
+              icon="person-circle-outline"
+              iconColor={colors.tint}
+              title={user?.email || 'Unknown User'}
+              subtitle="Signed in"
+              colors={colors}
+            />
+            <SettingRow
+              icon="log-out-outline"
+              iconColor={colors.recording}
+              title="Sign Out"
+              subtitle="Sign out of your account"
+              onPress={handleSignOut}
+              colors={colors}
+            />
+          </View>
+        </View>
+
+        {/* Appearance */}
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>Appearance</Text>
+          <View style={[styles.sectionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <View style={[styles.settingRow, { borderBottomColor: colors.border, flexDirection: 'column', alignItems: 'flex-start', gap: 12 }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                <View style={[styles.settingIcon, { backgroundColor: `${colors.tint}20` }]}>
+                  <Ionicons name="color-palette-outline" size={18} color={colors.tint} />
+                </View>
+                <Text style={[styles.settingTitle, { color: colors.text }]}>Theme</Text>
+              </View>
+              <View style={styles.themeSelector}>
+                {themeOptions.map(opt => (
+                  <Pressable
+                    key={opt.value}
+                    onPress={() => setThemePreference(opt.value)}
+                    style={[
+                      styles.themeOption,
+                      {
+                        backgroundColor: themePreference === opt.value ? colors.tint : colors.surfaceSecondary,
+                        borderColor: themePreference === opt.value ? colors.tint : colors.border,
+                      },
+                    ]}
+                  >
+                    <Ionicons
+                      name={opt.icon}
+                      size={16}
+                      color={themePreference === opt.value ? '#fff' : colors.textSecondary}
+                    />
+                    <Text style={[
+                      styles.themeOptionText,
+                      { color: themePreference === opt.value ? '#fff' : colors.textSecondary },
+                    ]}>
+                      {opt.label}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          </View>
+        </View>
+
+        {/* Recording */}
         <View style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>Recording</Text>
           <View style={[styles.sectionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
@@ -241,5 +322,24 @@ const styles = StyleSheet.create({
   settingSubtitle: {
     fontSize: 12,
     fontFamily: 'Inter_400Regular',
+  },
+  themeSelector: {
+    flexDirection: 'row',
+    gap: 8,
+    width: '100%',
+  },
+  themeOption: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  themeOptionText: {
+    fontSize: 13,
+    fontFamily: 'Inter_500Medium',
   },
 });

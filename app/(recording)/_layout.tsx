@@ -13,6 +13,7 @@ export default function RecordingLayout() {
       <Stack.Screen name="record" />
       <Stack.Screen name="capture" />
       <Stack.Screen name="review" />
+      <Stack.Screen name="patient-info" options={{ presentation: 'modal' }} />
     </Stack>
   );
 }

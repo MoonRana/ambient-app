@@ -39,3 +39,8 @@ yarn-error.*
 .vercel
 
 .env
+
+# config files
+.config/
+
+.local/

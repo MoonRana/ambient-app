@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
-  View, Text, StyleSheet, Pressable, useColorScheme, Platform,
-  ScrollView, Alert,
+  View, Text, StyleSheet, Pressable, Platform,
+  ScrollView, Alert, ActivityIndicator,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -12,17 +12,103 @@ import * as Haptics from 'expo-haptics';
 import Animated, { FadeIn, FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { useThemeColors } from '@/constants/colors';
 import { useSessions, CapturedImage } from '@/lib/session-context';
+import { analyzeInsuranceCard } from '@/lib/supabase-api';
+import { useEffectiveColorScheme } from '@/lib/settings-context';
 
 function generateId(): string {
   return Date.now().toString() + Math.random().toString(36).substr(2, 9);
 }
 
 export default function CaptureScreen() {
-  const colorScheme = useColorScheme();
+  const colorScheme = useEffectiveColorScheme();
   const colors = useThemeColors(colorScheme);
   const insets = useSafeAreaInsets();
   const { currentSession, updateSession } = useSessions();
+
+  // Keep session ID in a ref so callbacks never go stale
+  const sessionIdRef = useRef(currentSession?.id);
+
   const [images, setImages] = useState<CapturedImage[]>(currentSession?.capturedImages || []);
+  const [scanningId, setScanningId] = useState<string | null>(null);
+
+  // Local patientInfo state — updates immediately on each scan so the UI
+  // always shows fresh data regardless of context re-render timing.
+  const [patientInfo, setPatientInfo] = useState(
+    currentSession?.patientInfo ?? {}
+  );
+
+  const handleScanImage = async (img: CapturedImage) => {
+    if (scanningId) return;
+    setScanningId(img.id);
+
+    if (Platform.OS !== 'web') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+
+    try {
+      const info = await analyzeInsuranceCard(img.uri);
+
+      // Merge into local state — this re-renders immediately
+      setPatientInfo(prev => {
+        const merged = {
+          ...prev,
+          memberId: info.member_id || prev.memberId,
+          groupNumber: info.group_number || prev.groupNumber,
+          payerName: info.payer_name || prev.payerName,
+          name: info.patient_name || prev.name,
+          address: info.address || prev.address,
+          dateOfBirth: info.date_of_birth || prev.dateOfBirth,
+        };
+        // Also persist to session store (fire-and-forget; no stale read needed)
+        const id = sessionIdRef.current;
+        if (id) updateSession(id, { patientInfo: merged });
+        return merged;
+      });
+
+      if (Platform.OS !== 'web') {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+
+      // Build a summary of what was actually extracted
+      const extracted = [
+        info.patient_name ? `Name: ${info.patient_name}` : null,
+        info.date_of_birth ? `DOB: ${info.date_of_birth}` : null,
+        info.payer_name ? `Payer: ${info.payer_name}` : null,
+        info.member_id ? `Member ID: ${info.member_id}` : null,
+        info.group_number ? `Group: ${info.group_number}` : null,
+        info.address ? `Address: ${info.address}` : null,
+      ].filter(Boolean).join('\n');
+
+      Alert.alert(
+        'Document Scanned ✓',
+        extracted || 'Document scanned. No recognizable fields found.',
+        [{ text: 'OK' }]
+      );
+    } catch (err: any) {
+      console.error('Scan failed', err);
+
+      const msg: string = err?.message || '';
+      const isApiKeyError =
+        msg.includes('400') ||
+        msg.includes('401') ||
+        msg.includes('Anthropic') ||
+        msg.includes('authentication') ||
+        msg.includes('API key');
+
+      Alert.alert(
+        isApiKeyError ? 'AI Service Not Configured' : 'Scan Error',
+        isApiKeyError
+          ? 'The document scanning service needs an Anthropic API key.\n\nGo to: Supabase Dashboard → Edge Functions → Secrets → add ANTHROPIC_API_KEY.\n\nYou can still enter patient info manually.'
+          : 'Could not extract info automatically. You can enter the details manually instead.',
+        [
+          { text: 'OK' },
+          { text: 'Enter Manually', onPress: () => router.push('/(recording)/patient-info') },
+        ]
+      );
+    } finally {
+      setScanningId(null);
+    }
+  };
 
   const addImage = async (useCamera: boolean) => {
     try {
@@ -75,9 +161,11 @@ export default function CaptureScreen() {
   };
 
   const handleNext = () => {
-    if (currentSession) {
-      updateSession(currentSession.id, {
+    const id = sessionIdRef.current;
+    if (id) {
+      updateSession(id, {
         capturedImages: images,
+        patientInfo,          // persist latest local patientInfo
         status: 'reviewing',
       });
     }
@@ -175,6 +263,20 @@ export default function CaptureScreen() {
                     contentFit="cover"
                   />
                   <Pressable
+                    onPress={() => handleScanImage(img)}
+                    disabled={!!scanningId}
+                    style={[
+                      styles.scanBtn,
+                      { backgroundColor: scanningId === img.id ? colors.tint : colors.surface, borderColor: colors.border }
+                    ]}
+                  >
+                    {scanningId === img.id ? (
+                      <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                      <Ionicons name="scan-outline" size={14} color={colors.tint} />
+                    )}
+                  </Pressable>
+                  <Pressable
                     onPress={() => removeImage(img.id)}
                     style={[styles.removeBtn, { backgroundColor: colors.recording }]}
                     hitSlop={8}
@@ -184,6 +286,54 @@ export default function CaptureScreen() {
                 </Animated.View>
               ))}
             </View>
+
+            {/* Show extracted info if any field was found */}
+            {Object.values(patientInfo).some(Boolean) && (
+              <Animated.View entering={FadeIn.duration(400)} style={[styles.infoPreview, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                <View style={styles.infoPreviewHeader}>
+                  <Ionicons name="checkmark-circle" size={18} color={colors.accent} />
+                  <Text style={[styles.infoPreviewTitle, { color: colors.text }]}>Extracted Information</Text>
+                </View>
+                <View style={styles.infoGrid}>
+                  {patientInfo.name && (
+                    <View style={styles.infoItem}>
+                      <Text style={[styles.infoLabel, { color: colors.textTertiary }]}>Patient</Text>
+                      <Text style={[styles.infoValue, { color: colors.text }]}>{patientInfo.name}</Text>
+                    </View>
+                  )}
+                  {patientInfo.dateOfBirth && (
+                    <View style={styles.infoItem}>
+                      <Text style={[styles.infoLabel, { color: colors.textTertiary }]}>DOB</Text>
+                      <Text style={[styles.infoValue, { color: colors.text }]}>{patientInfo.dateOfBirth}</Text>
+                    </View>
+                  )}
+                  {patientInfo.payerName && (
+                    <View style={styles.infoItem}>
+                      <Text style={[styles.infoLabel, { color: colors.textTertiary }]}>Insurance</Text>
+                      <Text style={[styles.infoValue, { color: colors.text }]}>{patientInfo.payerName}</Text>
+                    </View>
+                  )}
+                  {patientInfo.memberId && (
+                    <View style={styles.infoItem}>
+                      <Text style={[styles.infoLabel, { color: colors.textTertiary }]}>Member ID</Text>
+                      <Text style={[styles.infoValue, { color: colors.text }]}>{patientInfo.memberId}</Text>
+                    </View>
+                  )}
+                  {patientInfo.groupNumber && (
+                    <View style={styles.infoItem}>
+                      <Text style={[styles.infoLabel, { color: colors.textTertiary }]}>Group</Text>
+                      <Text style={[styles.infoValue, { color: colors.text }]}>{patientInfo.groupNumber}</Text>
+                    </View>
+                  )}
+                  {patientInfo.address && (
+                    <View style={styles.infoItem}>
+                      <Text style={[styles.infoLabel, { color: colors.textTertiary }]}>Address</Text>
+                      <Text style={[styles.infoValue, { color: colors.text }]}>{patientInfo.address}</Text>
+                    </View>
+                  )}
+                </View>
+              </Animated.View>
+            )}
           </Animated.View>
         )}
 
@@ -200,6 +350,24 @@ export default function CaptureScreen() {
             </Text>
           </Animated.View>
         )}
+
+        {/* Manual entry button */}
+        <Animated.View entering={FadeIn.duration(400).delay(250)}>
+          <Pressable
+            onPress={() => router.push('/(recording)/patient-info')}
+            style={({ pressed }) => [
+              styles.manualBtn,
+              { backgroundColor: colors.surface, borderColor: colors.border, opacity: pressed ? 0.8 : 1 },
+            ]}
+          >
+            <Ionicons name="person-add-outline" size={20} color={colors.tint} />
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.manualBtnTitle, { color: colors.text }]}>Enter Patient Info Manually</Text>
+              <Text style={[styles.manualBtnSub, { color: colors.textTertiary }]}>Add name, insurance ID, medications & more</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+          </Pressable>
+        </Animated.View>
       </ScrollView>
 
       <Animated.View
@@ -317,6 +485,58 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
+    zIndex: 10,
+  },
+  scanBtn: {
+    position: 'absolute',
+    bottom: -6,
+    right: -6,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    zIndex: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  infoPreview: {
+    marginTop: 16,
+    padding: 16,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  infoPreviewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 12,
+  },
+  infoPreviewTitle: {
+    fontSize: 14,
+    fontFamily: 'Inter_600SemiBold',
+  },
+  infoGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 16,
+  },
+  infoItem: {
+    minWidth: '40%',
+  },
+  infoLabel: {
+    fontSize: 11,
+    fontFamily: 'Inter_500Medium',
+    textTransform: 'uppercase',
+    marginBottom: 2,
+  },
+  infoValue: {
+    fontSize: 13,
+    fontFamily: 'Inter_600SemiBold',
   },
   emptyState: {
     alignItems: 'center',
@@ -333,6 +553,23 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: 14,
     fontFamily: 'Inter_400Regular',
+  },
+  manualBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 14,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  manualBtnTitle: {
+    fontSize: 15,
+    fontFamily: 'Inter_600SemiBold',
+  },
+  manualBtnSub: {
+    fontSize: 12,
+    fontFamily: 'Inter_400Regular',
+    marginTop: 2,
   },
   footer: {
     paddingHorizontal: 24,

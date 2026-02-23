@@ -1,7 +1,8 @@
 import React from 'react';
-import { View, Text, StyleSheet, useColorScheme } from 'react-native';
+import { View, Text, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeColors } from '@/constants/colors';
+import { useEffectiveColorScheme } from '@/lib/settings-context';
 
 interface InfoCardProps {
   icon: keyof typeof Ionicons.glyphMap;
@@ -11,16 +12,16 @@ interface InfoCardProps {
 }
 
 export default function InfoCard({ icon, title, description, variant = 'default' }: InfoCardProps) {
-  const colorScheme = useColorScheme();
+  const colorScheme = useEffectiveColorScheme();
   const colors = useThemeColors(colorScheme);
 
   const bgColor = variant === 'accent' ? colors.accentLight
     : variant === 'warning' ? colors.warningLight
-    : colors.surfaceSecondary;
+      : colors.surfaceSecondary;
 
   const iconColor = variant === 'accent' ? colors.accent
     : variant === 'warning' ? colors.warning
-    : colors.tint;
+      : colors.tint;
 
   return (
     <View style={[styles.container, { backgroundColor: bgColor }]}>
