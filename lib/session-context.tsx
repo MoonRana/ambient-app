@@ -44,6 +44,9 @@ export interface AmbientSession {
   };
   fullNote?: string;
   errorMessage?: string;
+  patientId?: string;
+  encounterId?: string;
+  savedToCloud?: boolean;
 }
 
 interface SessionContextValue {
@@ -65,49 +68,7 @@ function generateId(): string {
   return Date.now().toString() + Math.random().toString(36).substr(2, 9);
 }
 
-/** Fire-and-forget upsert of a session to Supabase. Never throws. */
-async function saveSessionToSupabase(session: AmbientSession): Promise<void> {
-  try {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return; // not signed in — skip silently
-
-    const row = {
-      id: session.id,
-      user_id: user.id,
-      created_at: new Date(session.createdAt).toISOString(),
-      updated_at: new Date(session.updatedAt).toISOString(),
-      status: session.status,
-      recording_duration: session.recordingDuration,
-      patient_context: session.patientContext ?? null,
-      // Patient info — flattened for easier querying
-      patient_name: session.patientInfo?.name ?? null,
-      patient_dob: session.patientInfo?.dateOfBirth ?? null,
-      patient_address: session.patientInfo?.address ?? null,
-      member_id: session.patientInfo?.memberId ?? null,
-      group_number: session.patientInfo?.groupNumber ?? null,
-      payer_name: session.patientInfo?.payerName ?? null,
-      // SOAP note
-      soap_subjective: session.soapNote?.subjective ?? null,
-      soap_objective: session.soapNote?.objective ?? null,
-      soap_assessment: session.soapNote?.assessment ?? null,
-      soap_plan: session.soapNote?.plan ?? null,
-      soap_follow_up: session.soapNote?.followUp ?? null,
-      full_note: session.fullNote ?? null,
-      transcript: session.transcript ?? null,
-      error_message: session.errorMessage ?? null,
-    };
-
-    const { error } = await supabase.from('sessions').upsert(row, { onConflict: 'id' });
-    if (error) {
-      console.warn('[SessionContext] Supabase upsert failed (session still saved locally):', error.message);
-    } else {
-      console.log('[SessionContext] Session synced to Supabase:', session.id);
-    }
-  } catch (e: any) {
-    // Never block the local flow
-    console.warn('[SessionContext] saveSessionToSupabase error:', e?.message);
-  }
-}
+// Legacy saveSessionToSupabase removed — we now only write to ambient_sessions via the Review screen's Save & Finish pipeline.
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [sessions, setSessions] = useState<AmbientSession[]>([]);
@@ -168,21 +129,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     );
     if (currentSession?.id === id) {
       setCurrentSession(prev => prev ? { ...prev, ...updates, updatedAt: Date.now() } : prev);
-    }
-
-    // Persist to Supabase whenever a session reaches 'completed' or when
-    // patient info / soap note is updated on an already-completed session.
-    const shouldSync =
-      updates.status === 'completed' ||
-      updates.patientInfo !== undefined ||
-      updates.soapNote !== undefined;
-
-    if (shouldSync) {
-      setSessions(prev => {
-        const session = prev.find(s => s.id === id);
-        if (session) saveSessionToSupabase({ ...session, ...updates, updatedAt: Date.now() });
-        return prev; // no-op state mutation — just piggybacks on the read
-      });
     }
   };
 

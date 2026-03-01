@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Deep Blue Gradient Background -->
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0284C7" /> <!-- Light Blue 600 -->
+      <stop offset="100%" stop-color="#0369A1" /> <!-- Blue 700 / Tint color -->
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="30" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+    <linearGradient id="fgGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="100%" stop-color="#E0F2FE" />
+    </linearGradient>
+  </defs>
+
+  <!-- Base Square -->
+  <rect width="1024" height="1024" fill="url(#bgGrad)" />
+
+  <!-- The "Asterisk" / Star of Life - Custom drawn to look premium and thick -->
+  <g transform="translate(512, 512)" fill="url(#fgGrad)" filter="url(#glow)">
+    <!-- Vertical Bar -->
+    <rect x="-60" y="-280" width="120" height="560" rx="40" />
+    <!-- Diagonal Bar 1 -->
+    <rect x="-60" y="-280" width="120" height="560" rx="40" transform="rotate(60)" />
+    <!-- Diagonal Bar 2 -->
+    <rect x="-60" y="-280" width="120" height="560" rx="40" transform="rotate(120)" />
+    
+    <!-- Inner bright cutout / circle to make it look like a spark -->
+    <circle cx="0" cy="0" r="45" fill="url(#bgGrad)" />
+  </g>
+</svg>

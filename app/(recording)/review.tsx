@@ -12,8 +12,14 @@ import { useKeepAwake } from 'expo-keep-awake';
 import Animated, { FadeIn, FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { useThemeColors } from '@/constants/colors';
 import { useSessions } from '@/lib/session-context';
-import { processRecordingToSOAP, generateSOAPNote, analyzeInsuranceCard, type ProcessingProgress } from '@/lib/supabase-api';
+import {
+  processRecordingToSOAP, generateSOAPNote, analyzeInsuranceCard,
+  type ProcessingProgress,
+  savePatientToSupabase, saveEncounterToSupabase,
+  saveReportToSupabase, upsertAmbientSession, savePatientData,
+} from '@/lib/supabase-api';
 import { useEffectiveColorScheme } from '@/lib/settings-context';
+import { useAuth } from '@/lib/auth-context';
 
 function formatDuration(seconds: number): string {
   const mins = Math.floor(seconds / 60);
@@ -36,11 +42,17 @@ export default function ReviewScreen() {
   const colors = useThemeColors(colorScheme);
   const insets = useSafeAreaInsets();
   const { currentSession, updateSession } = useSessions();
+  const { user } = useAuth();
 
   const [patientContext, setPatientContext] = useState(currentSession?.patientContext || '');
   const [isGenerating, setIsGenerating] = useState(false);
   const [soapNote, setSoapNote] = useState(currentSession?.soapNote || null);
   const [processingProgress, setProcessingProgress] = useState<ProcessingProgress | null>(null);
+
+  // ── Save pipeline state ──────────────────────────────────────────────────
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveStep, setSaveStep] = useState<string | null>(null);
+  const [isSaved, setIsSaved] = useState(currentSession?.savedToCloud || false);
 
   // Keep the screen awake during the entire upload + processing flow
   useKeepAwake();
@@ -258,6 +270,98 @@ export default function ReviewScreen() {
     setProcessingProgress(null);
   }, [currentSession, patientContext]);
 
+  const handleSaveAndFinish = useCallback(async () => {
+    if (!currentSession || !soapNote || !user) return;
+
+    setIsSaving(true);
+    const fullNote = currentSession.fullNote
+      || `Subjective:\n${soapNote.subjective}\n\nObjective:\n${soapNote.objective}\n\nAssessment:\n${soapNote.assessment}\n\nPlan:\n${soapNote.plan}${soapNote.followUp ? `\n\nFollow-Up:\n${soapNote.followUp}` : ''}`;
+
+    try {
+      // Step 1: Save patient
+      setSaveStep('Saving patient record...');
+      const patientId = await savePatientToSupabase(user.id, {
+        name: currentSession.patientInfo?.name || patientContext || undefined,
+        dateOfBirth: currentSession.patientInfo?.dateOfBirth,
+        memberId: currentSession.patientInfo?.memberId,
+      });
+
+      // Step 2: Save encounter
+      setSaveStep('Saving encounter...');
+      const encounterId = await saveEncounterToSupabase(
+        user.id,
+        patientId,
+        fullNote,
+        { recordingDuration: currentSession.recordingDuration },
+      );
+
+      // Step 3: Save report
+      setSaveStep('Saving report...');
+      await saveReportToSupabase(
+        user.id,
+        patientId,
+        encounterId,
+        fullNote,
+        currentSession.patientInfo?.name,
+      );
+
+      // Step 4: Sync ambient session (best-effort — schema mismatches won't block)
+      setSaveStep('Syncing session...');
+      try {
+        await upsertAmbientSession({
+          userId: user.id,
+          patientId,
+          status: 'completed',
+          transcript: currentSession.transcript,
+          generatedNote: fullNote,
+          audioS3Uri: currentSession.audioS3Uri,
+        });
+      } catch (syncErr) {
+        console.warn('Ambient session sync skipped:', syncErr);
+      }
+
+      // Step 5: Structured extraction
+      setSaveStep('Extracting clinical data...');
+      await savePatientData({
+        userId: user.id,
+        patientId,
+        encounterId,
+        generatedNote: fullNote,
+      });
+
+      // Mark locally saved
+      updateSession(currentSession.id, {
+        patientId,
+        encounterId,
+        savedToCloud: true,
+      });
+
+      setIsSaved(true);
+      if (Platform.OS !== 'web') {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+
+      // Auto-dismiss after brief delay
+      setTimeout(() => router.dismissAll(), 600);
+    } catch (error: any) {
+      console.error('Save pipeline failed at:', saveStep, error);
+      Alert.alert(
+        'Save Error',
+        `Could not save: ${error.message}\n\nYou can retry or skip.`,
+        [
+          { text: 'Retry', onPress: () => handleSaveAndFinish() },
+          { text: 'Skip', style: 'cancel' },
+        ],
+      );
+      if (Platform.OS !== 'web') {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      }
+    } finally {
+      setIsSaving(false);
+      setSaveStep(null);
+    }
+  }, [currentSession, soapNote, user, patientContext, saveStep]);
+
   const handleDone = () => {
     router.dismissAll();
   };
@@ -458,18 +562,44 @@ export default function ReviewScreen() {
       {soapNote && (
         <Animated.View
           entering={FadeInUp.duration(400)}
-          style={[styles.footer, { paddingBottom: Platform.OS === 'web' ? 34 : Math.max(insets.bottom, 16) + 8 }]}
+          style={[styles.footer, { paddingBottom: Platform.OS === 'web' ? 34 : Math.max(insets.bottom, 16) + 8, backgroundColor: colors.background }]}
         >
-          <Pressable
-            onPress={handleDone}
-            style={({ pressed }) => [
-              styles.doneButton,
-              { backgroundColor: colors.tint, opacity: pressed ? 0.9 : 1 },
-            ]}
-          >
-            <Ionicons name="checkmark" size={22} color="#fff" />
-            <Text style={styles.doneButtonText}>Done</Text>
-          </Pressable>
+          {/* Save progress indicator */}
+          {isSaving && saveStep && (
+            <View style={styles.saveProgressRow}>
+              <ActivityIndicator size="small" color={colors.tint} />
+              <Text style={[styles.saveStepText, { color: colors.textSecondary }]}>{saveStep}</Text>
+            </View>
+          )}
+
+          {isSaved ? (
+            <View style={[styles.doneButton, { backgroundColor: colors.accent }]}>
+              <Ionicons name="cloud-done" size={22} color="#fff" />
+              <Text style={styles.doneButtonText}>Saved to Cloud</Text>
+            </View>
+          ) : (
+            <>
+              <Pressable
+                onPress={handleSaveAndFinish}
+                disabled={isSaving}
+                style={({ pressed }) => [
+                  styles.doneButton,
+                  {
+                    backgroundColor: isSaving ? colors.surfaceSecondary : colors.tint,
+                    opacity: pressed ? 0.9 : 1,
+                  },
+                ]}
+              >
+                <Ionicons name="cloud-upload" size={22} color={isSaving ? colors.textTertiary : '#fff'} />
+                <Text style={[styles.doneButtonText, isSaving && { color: colors.textTertiary }]}>
+                  {isSaving ? 'Saving...' : 'Save & Finish'}
+                </Text>
+              </Pressable>
+              <Pressable onPress={handleDone} style={styles.skipSaveBtn}>
+                <Text style={[styles.skipSaveText, { color: colors.textTertiary }]}>Skip Save</Text>
+              </Pressable>
+            </>
+          )}
         </Animated.View>
       )}
     </View>
@@ -672,5 +802,24 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontFamily: 'Inter_600SemiBold',
     color: '#fff',
+  },
+  saveProgressRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  saveStepText: {
+    fontSize: 13,
+    fontFamily: 'Inter_400Regular',
+  },
+  skipSaveBtn: {
+    alignItems: 'center',
+    paddingVertical: 10,
+  },
+  skipSaveText: {
+    fontSize: 14,
+    fontFamily: 'Inter_400Regular',
   },
 });

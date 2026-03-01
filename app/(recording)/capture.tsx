@@ -206,9 +206,11 @@ export default function CaptureScreen() {
         showsVerticalScrollIndicator={false}
       >
         <Animated.View entering={FadeInDown.duration(400)}>
-          <Text style={[styles.title, { color: colors.text }]}>Capture Documents</Text>
+          <Text style={[styles.title, { color: colors.text }]}>Review Documents</Text>
           <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
-            Photograph medication bottles, insurance cards, or other clinical documents.
+            {images.length > 0
+              ? `You captured ${images.length} document${images.length !== 1 ? 's' : ''} during the session. Add more or continue to review.`
+              : 'Photograph medication bottles, insurance cards, or other clinical documents.'}
           </Text>
         </Animated.View>
 
@@ -347,6 +349,9 @@ export default function CaptureScreen() {
             </View>
             <Text style={[styles.emptyText, { color: colors.textTertiary }]}>
               No documents captured yet
+            </Text>
+            <Text style={[styles.emptySubText, { color: colors.textTertiary }]}>
+              Use the buttons above to photograph insurance cards, medication bottles, or clinical documents.
             </Text>
           </Animated.View>
         )}
@@ -542,6 +547,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 40,
     gap: 12,
+    paddingHorizontal: 12,
   },
   emptyIcon: {
     width: 72,
@@ -552,7 +558,15 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     fontSize: 14,
+    fontFamily: 'Inter_500Medium',
+    textAlign: 'center',
+  },
+  emptySubText: {
+    fontSize: 12,
     fontFamily: 'Inter_400Regular',
+    textAlign: 'center',
+    lineHeight: 18,
+    maxWidth: 280,
   },
   manualBtn: {
     flexDirection: 'row',

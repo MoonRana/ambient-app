@@ -443,3 +443,322 @@ export async function processRecordingToSOAP(
     throw error;
   }
 }
+// ─────────────────────────────────────────────────────────────────────────────
+// STAT Consult helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface Specialty {
+  id: string;
+  name: string;
+  icon?: string;
+}
+
+export interface ConsultSource {
+  title: string;
+  url?: string;
+  snippet?: string;
+  source?: string;
+  pmid?: string;
+  journal?: string;
+  year?: number | string;
+}
+
+export interface ConsultMetrics {
+  retrievalTime?: number;
+  generationTime?: number;
+  totalTime?: number;
+  chunksRetrieved?: number;
+}
+
+export interface StreamClinicalQACallbacks {
+  onMetadata?: (
+    guidelines: ConsultSource[],
+    webSources: ConsultSource[],
+    pubmedSources: ConsultSource[],
+    metrics: ConsultMetrics,
+  ) => void;
+  onToken: (text: string) => void;
+  onDone: (metrics: ConsultMetrics) => void;
+  onError: (err: Error) => void;
+}
+
+/** Fetch active specialties from the DB for the specialty picker. */
+export async function fetchSpecialties(): Promise<Specialty[]> {
+  try {
+    const { data, error } = await supabase
+      .from('specialties')
+      .select('id, name')
+      .eq('is_active', true)
+      .order('name');
+    if (error) throw error;
+    return (data ?? []) as Specialty[];
+  } catch (e: any) {
+    console.warn('[fetchSpecialties]', e?.message);
+    return [];
+  }
+}
+
+/**
+ * Stream a clinical Q&A question to the clinical-qa Edge Function.
+ * Parses the SSE response and fires typed callbacks.
+ * Returns an AbortController so the caller can cancel mid-stream.
+ */
+export function streamClinicalQA(
+  params: {
+    question: string;
+    specialty_id?: string | null;
+    conversation_history?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  },
+  callbacks: StreamClinicalQACallbacks,
+): AbortController {
+  const controller = new AbortController();
+  const xhr = new XMLHttpRequest();
+
+  controller.signal.addEventListener('abort', () => {
+    xhr.abort();
+  });
+
+  getAuthHeaders().then(headers => {
+    const url = `${getBaseUrl()}/functions/v1/clinical-qa`;
+
+    xhr.open('POST', url);
+    for (const [k, v] of Object.entries(headers)) {
+      xhr.setRequestHeader(k, v);
+    }
+    // Very important to ask for text/event-stream so middleware/routers don't buffer it completely
+    xhr.setRequestHeader('Accept', 'text/event-stream');
+
+    let seenBytes = 0;
+    let buffer = '';
+
+    xhr.onreadystatechange = () => {
+      // readyState 3 is LOADING (partial data), 4 is DONE
+      if (xhr.readyState === 3 || xhr.readyState === 4) {
+        if (xhr.readyState === 4 && xhr.status >= 400 && xhr.status !== 0) {
+          let msg = `HTTP ${xhr.status}`;
+          try {
+            msg = JSON.parse(xhr.responseText)?.error || msg;
+          } catch {
+            if (xhr.responseText) msg += `: ${xhr.responseText}`;
+          }
+          callbacks.onError(new Error(msg));
+          return;
+        }
+
+        const currentText = xhr.responseText || '';
+        const newData = currentText.substring(seenBytes);
+        seenBytes = currentText.length;
+
+        buffer += newData;
+
+        // SSE events are separated by double newlines
+        const events = buffer.split('\n\n');
+        // Keep the last (possibly incomplete) chunk in the buffer
+        buffer = events.pop() ?? '';
+
+        for (const event of events) {
+          const dataLine = event
+            .split('\n')
+            .find(l => l.startsWith('data:'));
+          if (!dataLine) continue;
+
+          const jsonStr = dataLine.slice('data:'.length).trim();
+          if (!jsonStr || jsonStr === '[DONE]') continue;
+
+          let parsed: any;
+          try { parsed = JSON.parse(jsonStr); } catch { continue; }
+
+          if (parsed.type === 'metadata') {
+            callbacks.onMetadata?.(
+              parsed.guidelines ?? [],
+              parsed.webSources ?? [],
+              parsed.pubmedSources ?? [],
+              parsed.metrics ?? {},
+            );
+          } else if (parsed.type === 'content') {
+            callbacks.onToken(parsed.text ?? '');
+          } else if (parsed.type === 'done') {
+            callbacks.onDone(parsed.metrics ?? {});
+          } else if (parsed.type === 'error') {
+            callbacks.onError(new Error(parsed.message || 'Stream error'));
+          }
+        }
+      }
+    };
+
+    xhr.onerror = () => {
+      callbacks.onError(new Error('Network error during streaming.'));
+    };
+
+    xhr.send(JSON.stringify({
+      question: params.question,
+      specialty_id: params.specialty_id ?? null,
+      stream: true,
+      conversation_history: params.conversation_history ?? [],
+    }));
+
+  }).catch(err => {
+    if (err?.name !== 'AbortError') {
+      callbacks.onError(err instanceof Error ? err : new Error(String(err)));
+    }
+  });
+
+  return controller;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Patient Data Saving
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Insert a new patient record. Returns the new patient UUID. */
+export async function savePatientToSupabase(
+  userId: string,
+  patientInfo: {
+    name?: string;
+    dateOfBirth?: string;
+    facility?: string;
+    memberId?: string;
+  },
+): Promise<string> {
+  // DB requires last_name not null, so fallback if only one name is provided
+  const firstName = patientInfo?.name?.split(' ')[0] || 'Unknown';
+  const lastName = patientInfo?.name?.split(' ').slice(1).join(' ') || 'Patient';
+
+  const { data, error } = await supabase
+    .from('patients')
+    .insert({
+      user_id: userId,
+      first_name: firstName,
+      last_name: lastName,
+      date_of_birth: patientInfo.dateOfBirth || null,
+      facility: patientInfo.facility || null,
+      prn_mrn: patientInfo.memberId || null,
+    })
+    .select('id')
+    .single();
+
+  if (error) throw new Error(`Failed to save patient: ${error.message}`);
+  return data.id;
+}
+
+/** Insert a patient encounter. Returns the new encounter UUID. */
+export async function saveEncounterToSupabase(
+  userId: string,
+  patientId: string,
+  generatedNote: string,
+  session: {
+    recordingDuration?: number;
+  },
+): Promise<string> {
+  const { data, error } = await supabase
+    .from('patient_encounters')
+    .insert({
+      user_id: userId,
+      patient_id: patientId,
+      encounter_type: 'progress_note',
+      encounter_date: new Date().toISOString().split('T')[0],
+      notes: generatedNote,
+      is_signed: false,
+    })
+    .select('id')
+    .single();
+
+  if (error) throw new Error(`Failed to save encounter: ${error.message}`);
+  return data.id;
+}
+
+/** Insert a report record. Returns the new report UUID. */
+export async function saveReportToSupabase(
+  userId: string,
+  patientId: string,
+  encounterId: string,
+  generatedNote: string,
+  patientName?: string,
+): Promise<string> {
+  const title = patientName
+    ? `Progress Note - ${patientName}`
+    : `Progress Note - ${new Date().toLocaleDateString()}`;
+
+  const { data, error } = await supabase
+    .from('reports')
+    .insert({
+      user_id: userId,
+      patient_id: patientId,
+      encounter_id: encounterId,
+      title,
+      final_report: generatedNote,
+      template_type: 'soap',
+      original_document_name: 'ambient_recording',
+    })
+    .select('id')
+    .single();
+
+  if (error) throw new Error(`Failed to save report: ${error.message}`);
+  return data.id;
+}
+
+/** Insert the ambient session into the cloud ambient_sessions table.
+ *  The local session ID is a timestamp string, not a UUID, so we let
+ *  Supabase generate a proper UUID. Returns the new cloud session UUID. */
+export async function upsertAmbientSession(params: {
+  userId: string;
+  patientId?: string;
+  status: string;
+  transcript?: string;
+  generatedNote?: string;
+  audioS3Uri?: string;
+}): Promise<string> {
+  const { data, error } = await supabase
+    .from('ambient_sessions')
+    .insert({
+      // id intentionally omitted — Supabase generates a valid UUID
+      user_id: params.userId,
+      patient_id: params.patientId || null,
+      status: params.status,
+      // Wrap generated note, transcript, and audio URI into the JSONB session_data column
+      session_data: {
+        transcript: params.transcript,
+        generated_note: params.generatedNote,
+        audio_s3_uri: params.audioS3Uri,
+      },
+    })
+    .select('id')
+    .single();
+
+  if (error) throw new Error(`Failed to sync session: ${error.message}`);
+  return data.id;
+}
+
+/**
+ * Call the save-patient-data edge function for structured extraction.
+ * Parses vitals, medications, diagnoses, procedures, social/family history
+ * from the generated SOAP note.
+ */
+export async function savePatientData(params: {
+  userId: string;
+  patientId: string;
+  encounterId?: string;
+  generatedNote: string;
+}): Promise<any> {
+  const headers = await getAuthHeaders();
+
+  const response = await fetchWithTimeout(
+    `${getBaseUrl()}/functions/v1/save-patient-data`,
+    {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        userId: params.userId,
+        patientId: params.patientId,
+        encounterId: params.encounterId || null,
+        generatedNote: params.generatedNote,
+      }),
+    },
+  );
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error || `Failed to save patient data: HTTP ${response.status}`);
+  }
+  return data;
+}

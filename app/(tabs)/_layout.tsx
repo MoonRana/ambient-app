@@ -19,6 +19,10 @@ function NativeTabLayout() {
         <Icon sf={{ default: "clock", selected: "clock.fill" }} />
         <Label>History</Label>
       </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="consult">
+        <Icon sf={{ default: "stethoscope", selected: "stethoscope.circle.fill" }} />
+        <Label>Consult</Label>
+      </NativeTabs.Trigger>
       <NativeTabs.Trigger name="settings">
         <Icon sf={{ default: "gearshape", selected: "gearshape.fill" }} />
         <Label>Settings</Label>
@@ -79,6 +83,15 @@ function ClassicTabLayout() {
           title: "History",
           tabBarIcon: ({ color, focused }) => (
             <Ionicons name={focused ? "time" : "time-outline"} size={24} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="consult"
+        options={{
+          title: "Consult",
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons name={focused ? "medical" : "medical-outline"} size={24} color={color} />
           ),
         }}
       />

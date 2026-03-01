@@ -154,7 +154,6 @@ async function ensureSounds() {
 export async function playRecordingStart(): Promise<void> {
     if (Platform.OS === 'web') return;
     try {
-        await Audio.setAudioModeAsync({ playsInSilentModeIOS: true, allowsRecordingIOS: false });
         await ensureSounds();
         await _startSound!.setPositionAsync(0);
         await _startSound!.playAsync();
@@ -167,7 +166,6 @@ export async function playRecordingStart(): Promise<void> {
 export async function playRecordingStop(): Promise<void> {
     if (Platform.OS === 'web') return;
     try {
-        await Audio.setAudioModeAsync({ playsInSilentModeIOS: true, allowsRecordingIOS: false });
         await ensureSounds();
         await _stopSound!.setPositionAsync(0);
         await _stopSound!.playAsync();
