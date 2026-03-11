@@ -26,7 +26,7 @@ export interface ConsultMessage {
     };
     /** Final performance metrics attached once done */
     doneMetrics?: ConsultMetrics;
-    error?: string;
+    error?: string; xx
 }
 
 interface ConsultContextValue {

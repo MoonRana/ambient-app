@@ -330,6 +330,190 @@ export async function analyzeInsuranceCard(imageUri: string): Promise<{
   };
 }
 
+/**
+ * Extract all clinical information from any medical document image.
+ *
+ * Unlike analyzeInsuranceCard() which only looks for insurance fields,
+ * this function extracts the full clinical content of a document:
+ *   – Medications (name, dose, frequency, route)
+ *   – Diagnoses / ICD-10 codes
+ *   – Vitals (BP, HR, temp, SpO2, weight, height)
+ *   – Lab results (with values and reference ranges)
+ *   – Allergies
+ *   – HPI / chief complaint
+ *   – Discharge instructions / plan
+ *   – Any other clinical narrative text
+ *
+ * Returns a free-text string ready to be appended to documentContext,
+ * or null if extraction fails (non-fatal).
+ */
+export async function extractClinicalDocument(imageUri: string): Promise<string | null> {
+  let imageBase64: string;
+  const mimeType = 'image/jpeg';
+
+  try {
+    if (Platform.OS === 'web') {
+      const response = await fetch(imageUri);
+      const blob = await response.blob();
+      imageBase64 = await new Promise<string>((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+          const MAX = 1600; // slightly larger for clinical docs — more text to read
+          let { width, height } = img;
+          if (width > MAX || height > MAX) {
+            if (width > height) { height = Math.round(height * MAX / width); width = MAX; }
+            else { width = Math.round(width * MAX / height); height = MAX; }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width; canvas.height = height;
+          const ctx = canvas.getContext('2d')!;
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', 0.8).split(',')[1]);
+        };
+        img.onerror = reject;
+        img.src = URL.createObjectURL(blob);
+      });
+    } else {
+      try {
+        const manipulated = await ImageManipulator.manipulateAsync(
+          imageUri,
+          [{ resize: { width: 1600 } }],
+          { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
+        );
+        imageBase64 = await FileSystem.readAsStringAsync(manipulated.uri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+      } catch {
+        imageBase64 = await FileSystem.readAsStringAsync(imageUri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+      }
+    }
+  } catch (e: any) {
+    console.warn('[extractClinicalDocument] Failed to encode image:', e?.message);
+    return null;
+  }
+
+  try {
+    const headers = await getAuthHeaders();
+    const response = await fetchWithTimeout(`${getBaseUrl()}/functions/v1/extract-document-info`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        image_base64: imageBase64,
+        mime_type: mimeType,
+        document_type: 'clinical',
+      }),
+    });
+
+    const rawText = await response.text();
+    console.log('[extractClinicalDocument] HTTP status:', response.status);
+
+    if (!response.ok) {
+      console.warn('[extractClinicalDocument] Non-200 response:', rawText.slice(0, 300));
+      return null;
+    }
+
+    let data: any;
+    try { data = JSON.parse(rawText); } catch { return rawText.trim() || null; }
+
+    // The edge function may return:
+    //   { text: "..." }          — free-text OCR result
+    //   { data: { ... } }        — structured fields
+    //   { raw_text: "..." }      — some implementations use this key
+    // We prefer free-text; fall back to JSON-stringifying the structured data.
+    if (typeof data?.text === 'string' && data.text.trim()) return data.text.trim();
+    if (typeof data?.raw_text === 'string' && data.raw_text.trim()) return data.raw_text.trim();
+
+    // Build a human-readable summary from whatever structured fields came back
+    const d = data?.data ?? data ?? {};
+    const parts: string[] = [];
+
+    if (d.patient_name || d.patientName)
+      parts.push(`Patient: ${d.patient_name ?? d.patientName}`);
+    if (d.date_of_birth || d.dateOfBirth || d.dob)
+      parts.push(`DOB: ${d.date_of_birth ?? d.dateOfBirth ?? d.dob}`);
+
+    // Medications — may come as array or string
+    const meds = d.medications ?? d.medication_list ?? d.meds;
+    if (Array.isArray(meds) && meds.length > 0) {
+      parts.push('Medications:');
+      meds.forEach((m: any) => {
+        if (typeof m === 'string') { parts.push(`  - ${m}`); return; }
+        const medLine = [
+          m.name ?? m.medication_name,
+          m.dose ?? m.dosage,
+          m.frequency ?? m.freq,
+          m.route,
+        ].filter(Boolean).join(' ');
+        if (medLine) parts.push(`  - ${medLine}`);
+      });
+    } else if (typeof meds === 'string' && meds.trim()) {
+      parts.push(`Medications: ${meds.trim()}`);
+    }
+
+    // Diagnoses
+    const dx = d.diagnoses ?? d.diagnosis_list ?? d.problems;
+    if (Array.isArray(dx) && dx.length > 0) {
+      parts.push('Diagnoses:');
+      dx.forEach((x: any) => {
+        if (typeof x === 'string') { parts.push(`  - ${x}`); return; }
+        const dxLine = [x.name ?? x.diagnosis_name, x.icd10_code ?? x.icd10].filter(Boolean).join(' ');
+        if (dxLine) parts.push(`  - ${dxLine}`);
+      });
+    } else if (typeof dx === 'string' && dx.trim()) {
+      parts.push(`Diagnoses: ${dx.trim()}`);
+    }
+
+    // Vitals
+    const vitals = d.vitals ?? d.vital_signs;
+    if (vitals && typeof vitals === 'object') {
+      const vitalParts = Object.entries(vitals)
+        .filter(([, v]) => v != null && v !== '')
+        .map(([k, v]) => `${k}: ${v}`);
+      if (vitalParts.length) parts.push(`Vitals: ${vitalParts.join(', ')}`);
+    } else if (typeof vitals === 'string' && vitals.trim()) {
+      parts.push(`Vitals: ${vitals.trim()}`);
+    }
+
+    // Labs
+    const labs = d.labs ?? d.lab_results ?? d.laboratory;
+    if (Array.isArray(labs) && labs.length > 0) {
+      parts.push('Labs:');
+      labs.forEach((l: any) => {
+        if (typeof l === 'string') { parts.push(`  - ${l}`); return; }
+        const labLine = [l.name ?? l.test, l.value ?? l.result, l.unit, l.reference_range ?? l.ref_range]
+          .filter(Boolean).join(' ');
+        if (labLine) parts.push(`  - ${labLine}`);
+      });
+    }
+
+    // Allergies
+    const allergies = d.allergies ?? d.allergy_list;
+    if (Array.isArray(allergies) && allergies.length > 0) {
+      parts.push(`Allergies: ${allergies.map((a: any) => (typeof a === 'string' ? a : a.name ?? JSON.stringify(a))).join(', ')}`);
+    } else if (typeof allergies === 'string' && allergies.trim()) {
+      parts.push(`Allergies: ${allergies.trim()}`);
+    }
+
+    // Narrative fields
+    ['chief_complaint', 'hpi', 'history_of_present_illness', 'assessment', 'plan',
+      'discharge_instructions', 'narrative', 'summary'].forEach(key => {
+        const val = d[key] ?? d[key.replace(/_/g, '')] ?? d[key.replace(/_(\w)/g, (_, c) => c.toUpperCase())];
+        if (typeof val === 'string' && val.trim()) {
+          parts.push(`${key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}: ${val.trim()}`);
+        }
+      });
+
+    const result = parts.join('\n');
+    console.log('[extractClinicalDocument] Extracted', parts.length, 'sections,', result.length, 'chars');
+    return result || null;
+  } catch (e: any) {
+    console.warn('[extractClinicalDocument] Extraction failed:', e?.message);
+    return null;
+  }
+}
+
 export type ProcessingStep = 'uploading' | 'starting' | 'processing' | 'fetching' | 'generating' | 'complete' | 'error';
 
 export interface ProcessingProgress {

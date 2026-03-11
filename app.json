@@ -40,6 +40,21 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {
+        "origin": "https://replit.com/"
+      },
+      "eas": {
+        "projectId": "61103b32-59ec-4c5d-841d-1cd528f8c606"
+      }
+    },
+    "owner": "moonrana",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/61103b32-59ec-4c5d-841d-1cd528f8c606"
     }
   }
 }
