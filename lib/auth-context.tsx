@@ -18,8 +18,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const [isLoading, setIsLoading] = useState(true);
 
     useEffect(() => {
-        supabase.auth.getSession().then(({ data: { session } }) => {
-            setSession(session);
+        supabase.auth.getSession().then(({ data: { session }, error }) => {
+            if (error) {
+                // Stale / invalid refresh token — clear the session and force re-login
+                console.warn('Auth session error (likely expired token):', error.message);
+                supabase.auth.signOut().catch(() => { });
+                setSession(null);
+            } else {
+                setSession(session);
+            }
             setIsLoading(false);
         });
 

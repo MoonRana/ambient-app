@@ -514,6 +514,112 @@ export async function extractClinicalDocument(imageUri: string): Promise<string 
   }
 }
 
+/**
+ * Extract medications from a photo of a pill bottle or printed medication list.
+ *
+ * Calls the `extract-medications` edge function which returns structured
+ * medication data: name, dosage, frequency, route, and any notes.
+ *
+ * @param imageUri  Local image URI (file:// or content://)
+ * @param isMedList true for a printed medication list; false for a single pill bottle
+ */
+export interface ExtractedMedication {
+  name: string;
+  dose?: string;
+  frequency?: string;
+  route?: string;
+  notes?: string;
+}
+
+export async function extractMedications(
+  imageUri: string,
+  isMedList: boolean = false,
+): Promise<ExtractedMedication[]> {
+  let imageBase64: string;
+
+  try {
+    if (Platform.OS === 'web') {
+      const response = await fetch(imageUri);
+      const blob = await response.blob();
+      imageBase64 = await new Promise<string>((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+          const MAX = 1400;
+          let { width, height } = img;
+          if (width > MAX || height > MAX) {
+            if (width > height) { height = Math.round(height * MAX / width); width = MAX; }
+            else { width = Math.round(width * MAX / height); height = MAX; }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width; canvas.height = height;
+          const ctx = canvas.getContext('2d')!;
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', 0.8).split(',')[1]);
+        };
+        img.onerror = reject;
+        img.src = URL.createObjectURL(blob);
+      });
+    } else {
+      try {
+        const manipulated = await ImageManipulator.manipulateAsync(
+          imageUri,
+          [{ resize: { width: 1400 } }],
+          { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
+        );
+        imageBase64 = await FileSystem.readAsStringAsync(manipulated.uri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+      } catch {
+        imageBase64 = await FileSystem.readAsStringAsync(imageUri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+      }
+    }
+  } catch (e: any) {
+    console.warn('[extractMedications] Failed to encode image:', e?.message);
+    return [];
+  }
+
+  console.log('[extractMedications] Image base64 length:', imageBase64.length, 'chars, isMedList:', isMedList);
+
+  try {
+    const headers = await getAuthHeaders();
+    const response = await fetchWithTimeout(`${getBaseUrl()}/functions/v1/extract-medications`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        image_base64: imageBase64,
+        is_med_list: isMedList,
+      }),
+    });
+
+    const rawText = await response.text();
+    console.log('[extractMedications] HTTP status:', response.status);
+
+    if (!response.ok) {
+      console.warn('[extractMedications] Non-200 response:', rawText.slice(0, 300));
+      throw new Error(`Medication extraction failed: HTTP ${response.status}`);
+    }
+
+    let data: any;
+    try { data = JSON.parse(rawText); } catch { return []; }
+
+    // Normalise response — could be { medications: [...] }, { data: [...] }, or just [...]
+    const meds: any[] = data?.medications ?? data?.data ?? (Array.isArray(data) ? data : []);
+
+    return meds.map((m: any) => ({
+      name: m.name ?? m.medication_name ?? m.drug_name ?? 'Unknown',
+      dose: m.dose ?? m.dosage ?? m.strength,
+      frequency: m.frequency ?? m.freq ?? m.schedule,
+      route: m.route,
+      notes: m.notes ?? m.instructions ?? m.sig,
+    }));
+  } catch (e: any) {
+    console.warn('[extractMedications] Extraction failed:', e?.message);
+    throw e;
+  }
+}
+
 export type ProcessingStep = 'uploading' | 'starting' | 'processing' | 'fetching' | 'generating' | 'complete' | 'error';
 
 export interface ProcessingProgress {

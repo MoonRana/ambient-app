@@ -353,8 +353,8 @@ export default function RecordScreen() {
           <WaveformVisualizer
             isActive={isLive}
             color={isLive ? colors.recording : colors.border}
-            barCount={32}
-            height={72}
+            barCount={36}
+            height={110}
           />
         </Animated.View>
 
@@ -510,6 +510,12 @@ export default function RecordScreen() {
           </View>
         )}
 
+        {isActive && (
+          <Text style={[styles.stopHint, { color: colors.textTertiary }]}>
+            Stop & Process
+          </Text>
+        )}
+
         {recordingState === 'idle' && (
           <Pressable
             onPress={() => {
@@ -558,8 +564,8 @@ const styles = StyleSheet.create({
   },
   timerBlock: { alignItems: 'center', gap: 6 },
   timer: {
-    fontSize: 68, fontFamily: 'Inter_700Bold',
-    fontVariant: ['tabular-nums'], letterSpacing: -2,
+    fontSize: 80, fontFamily: 'Inter_700Bold',
+    fontVariant: ['tabular-nums'], letterSpacing: -3,
   },
   stateLabel: {
     fontSize: 12, fontFamily: 'Inter_600SemiBold',
@@ -623,4 +629,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.4, shadowRadius: 16, elevation: 12,
   },
   skipText: { fontSize: 13, fontFamily: 'Inter_400Regular' },
+  stopHint: {
+    fontSize: 12, fontFamily: 'Inter_500Medium',
+    textTransform: 'uppercase', letterSpacing: 1,
+    marginTop: -4,
+  },
 });

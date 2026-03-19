@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, StyleSheet, Pressable } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useThemeColors } from '@/constants/colors';
 import { AmbientSession } from '@/lib/session-context';
@@ -79,7 +79,11 @@ export default function SessionCard({ session, onPress, onDelete, onResume }: Se
       <View style={styles.content}>
         <View style={styles.topRow}>
           <View style={styles.titleRow}>
-            <Ionicons name={statusConfig.icon} size={16} color={statusConfig.color} />
+            {session.status === 'processing' ? (
+              <ActivityIndicator size={14} color={statusConfig.color} />
+            ) : (
+              <Ionicons name={statusConfig.icon} size={16} color={statusConfig.color} />
+            )}
             <Text style={[styles.statusLabel, { color: statusConfig.color }]}>
               {statusConfig.label}
             </Text>

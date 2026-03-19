@@ -582,7 +582,7 @@ export default function ReviewScreen() {
         )}
       </ScrollView>
 
-      {/* ── Sticky Footer ── */}
+      {/* ── Sticky Footer — Simplified ── */}
       {soapNote && (
         <Animated.View
           entering={FadeInUp.duration(400)}
@@ -597,29 +597,29 @@ export default function ReviewScreen() {
           )}
 
           <View style={styles.footerBtns}>
-            {/* Copy */}
+            {/* Copy to Clipboard — full width */}
             <Pressable
               onPress={handleCopy}
               style={({ pressed }) => [
                 styles.copyBtn,
                 {
-                  backgroundColor: copied ? `${colors.accent}20` : colors.surfaceSecondary,
+                  backgroundColor: copied ? `${colors.accent}18` : colors.surfaceSecondary,
                   borderColor: copied ? colors.accent : colors.border,
-                  opacity: pressed ? 0.8 : 1,
+                  opacity: pressed ? 0.85 : 1,
                 },
               ]}
             >
               <Ionicons
-                name={copied ? 'checkmark' : 'copy-outline'}
-                size={18}
+                name={copied ? 'checkmark-circle' : 'copy-outline'}
+                size={20}
                 color={copied ? colors.accent : colors.text}
               />
               <Text style={[styles.copyBtnText, { color: copied ? colors.accent : colors.text }]}>
-                {copied ? 'Copied!' : 'Copy Note'}
+                {copied ? 'Copied!' : 'Copy to Clipboard'}
               </Text>
             </Pressable>
 
-            {/* Save & Close */}
+            {/* Save & Close — full width, primary styling */}
             {isSaved ? (
               <View style={[styles.saveBtn, { backgroundColor: colors.accent }]}>
                 <Ionicons name="cloud-done" size={20} color="#fff" />
@@ -648,12 +648,6 @@ export default function ReviewScreen() {
               </Pressable>
             )}
           </View>
-
-          {!isSaved && (
-            <Pressable onPress={() => router.dismissAll()} style={styles.skipRow}>
-              <Text style={[styles.skipText, { color: colors.textTertiary }]}>Skip Save</Text>
-            </Pressable>
-          )}
         </Animated.View>
       )}
     </View>
@@ -730,17 +724,15 @@ const styles = StyleSheet.create({
     gap: 8, marginBottom: 10,
   },
   saveStepText: { fontSize: 13, fontFamily: 'Inter_400Regular' },
-  footerBtns: { flexDirection: 'row', gap: 10 },
+  footerBtns: { flexDirection: 'column', gap: 10 },
   copyBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
-    paddingVertical: 15, borderRadius: 14, borderWidth: 1,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    paddingVertical: 16, borderRadius: 14, borderWidth: 1,
   },
-  copyBtnText: { fontSize: 15, fontFamily: 'Inter_600SemiBold' },
+  copyBtnText: { fontSize: 16, fontFamily: 'Inter_600SemiBold' },
   saveBtn: {
-    flex: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    paddingVertical: 15, borderRadius: 14,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    paddingVertical: 16, borderRadius: 14,
   },
-  saveBtnText: { fontSize: 15, fontFamily: 'Inter_600SemiBold', color: '#fff' },
-  skipRow: { alignItems: 'center', paddingTop: 10 },
-  skipText: { fontSize: 13, fontFamily: 'Inter_400Regular' },
+  saveBtnText: { fontSize: 16, fontFamily: 'Inter_600SemiBold', color: '#fff' },
 });

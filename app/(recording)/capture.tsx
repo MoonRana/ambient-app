@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import {
   View, Text, StyleSheet, Pressable, Platform,
-  ScrollView, Alert, ActivityIndicator,
+  ScrollView, Alert, ActivityIndicator, ActionSheetIOS,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -12,12 +12,27 @@ import * as Haptics from 'expo-haptics';
 import Animated, { FadeIn, FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { useThemeColors } from '@/constants/colors';
 import { useSessions, CapturedImage } from '@/lib/session-context';
-import { analyzeInsuranceCard } from '@/lib/supabase-api';
+import {
+  analyzeInsuranceCard,
+  extractClinicalDocument,
+  extractMedications,
+  type ExtractedMedication,
+} from '@/lib/supabase-api';
 import { useEffectiveColorScheme } from '@/lib/settings-context';
 
 function generateId(): string {
   return Date.now().toString() + Math.random().toString(36).substr(2, 9);
 }
+
+// ── Document type config ──────────────────────────────────────────────────────
+type DocType = 'insurance' | 'clinical' | 'pill_bottle' | 'med_list';
+
+const DOC_TYPES: { key: DocType; label: string; icon: keyof typeof Ionicons.glyphMap; description: string }[] = [
+  { key: 'insurance', label: 'Insurance Card', icon: 'card-outline', description: 'Extract member ID, group, payer' },
+  { key: 'clinical', label: 'Lab / Clinical Doc', icon: 'flask-outline', description: 'Extract labs, vitals, diagnoses' },
+  { key: 'pill_bottle', label: 'Pill Bottle', icon: 'medical-outline', description: 'Extract medication & dosage' },
+  { key: 'med_list', label: 'Medication List', icon: 'list-outline', description: 'Extract full medication list' },
+];
 
 export default function CaptureScreen() {
   const colorScheme = useEffectiveColorScheme();
@@ -25,19 +40,55 @@ export default function CaptureScreen() {
   const insets = useSafeAreaInsets();
   const { currentSession, updateSession } = useSessions();
 
-  // Keep session ID in a ref so callbacks never go stale
   const sessionIdRef = useRef(currentSession?.id);
 
   const [images, setImages] = useState<CapturedImage[]>(currentSession?.capturedImages || []);
   const [scanningId, setScanningId] = useState<string | null>(null);
+  const [scanResults, setScanResults] = useState<Record<string, { type: DocType; summary: string }>>({});
 
-  // Local patientInfo state — updates immediately on each scan so the UI
-  // always shows fresh data regardless of context re-render timing.
   const [patientInfo, setPatientInfo] = useState(
     currentSession?.patientInfo ?? {}
   );
+  const [extractedMeds, setExtractedMeds] = useState<ExtractedMedication[]>([]);
+  const [extractedClinicalText, setExtractedClinicalText] = useState<string | null>(null);
 
-  const handleScanImage = async (img: CapturedImage) => {
+  // ── Scan with doc-type picker ───────────────────────────────────────────────
+  const showDocTypePicker = (img: CapturedImage) => {
+    if (scanningId) return;
+
+    const options = DOC_TYPES.map(d => d.label);
+    options.push('Cancel');
+
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          title: 'What type of document is this?',
+          options,
+          cancelButtonIndex: options.length - 1,
+        },
+        (buttonIndex) => {
+          if (buttonIndex < DOC_TYPES.length) {
+            handleScanImage(img, DOC_TYPES[buttonIndex].key);
+          }
+        },
+      );
+    } else {
+      // Android / Web fallback — use Alert with buttons
+      Alert.alert(
+        'Document Type',
+        'What type of document is this?',
+        [
+          ...DOC_TYPES.map(d => ({
+            text: d.label,
+            onPress: () => handleScanImage(img, d.key),
+          })),
+          { text: 'Cancel', style: 'cancel' as const },
+        ],
+      );
+    }
+  };
+
+  const handleScanImage = async (img: CapturedImage, docType: DocType) => {
     if (scanningId) return;
     setScanningId(img.id);
 
@@ -46,42 +97,65 @@ export default function CaptureScreen() {
     }
 
     try {
-      const info = await analyzeInsuranceCard(img.uri);
+      let summary = '';
 
-      // Merge into local state — this re-renders immediately
-      setPatientInfo(prev => {
-        const merged = {
-          ...prev,
-          memberId: info.member_id || prev.memberId,
-          groupNumber: info.group_number || prev.groupNumber,
-          payerName: info.payer_name || prev.payerName,
-          name: info.patient_name || prev.name,
-          address: info.address || prev.address,
-          dateOfBirth: info.date_of_birth || prev.dateOfBirth,
-        };
-        // Also persist to session store (fire-and-forget; no stale read needed)
-        const id = sessionIdRef.current;
-        if (id) updateSession(id, { patientInfo: merged });
-        return merged;
-      });
+      if (docType === 'insurance') {
+        const info = await analyzeInsuranceCard(img.uri);
+
+        setPatientInfo(prev => {
+          const merged = {
+            ...prev,
+            memberId: info.member_id || prev.memberId,
+            groupNumber: info.group_number || prev.groupNumber,
+            payerName: info.payer_name || prev.payerName,
+            name: info.patient_name || prev.name,
+            address: info.address || prev.address,
+            dateOfBirth: info.date_of_birth || prev.dateOfBirth,
+          };
+          const id = sessionIdRef.current;
+          if (id) updateSession(id, { patientInfo: merged });
+          return merged;
+        });
+
+        summary = [
+          info.patient_name ? `Name: ${info.patient_name}` : null,
+          info.date_of_birth ? `DOB: ${info.date_of_birth}` : null,
+          info.payer_name ? `Payer: ${info.payer_name}` : null,
+          info.member_id ? `Member ID: ${info.member_id}` : null,
+          info.group_number ? `Group: ${info.group_number}` : null,
+          info.address ? `Address: ${info.address}` : null,
+        ].filter(Boolean).join('\n');
+
+      } else if (docType === 'clinical') {
+        const text = await extractClinicalDocument(img.uri);
+        if (text) {
+          setExtractedClinicalText(prev => prev ? `${prev}\n\n${text}` : text);
+          summary = text.length > 200 ? text.slice(0, 200) + '…' : text;
+        } else {
+          summary = 'No clinical data could be extracted.';
+        }
+
+      } else if (docType === 'pill_bottle' || docType === 'med_list') {
+        const meds = await extractMedications(img.uri, docType === 'med_list');
+        if (meds.length > 0) {
+          setExtractedMeds(prev => [...prev, ...meds]);
+          summary = meds.map(m => {
+            return [m.name, m.dose, m.frequency].filter(Boolean).join(' ');
+          }).join('\n');
+        } else {
+          summary = 'No medications could be extracted.';
+        }
+      }
+
+      setScanResults(prev => ({ ...prev, [img.id]: { type: docType, summary } }));
 
       if (Platform.OS !== 'web') {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       }
 
-      // Build a summary of what was actually extracted
-      const extracted = [
-        info.patient_name ? `Name: ${info.patient_name}` : null,
-        info.date_of_birth ? `DOB: ${info.date_of_birth}` : null,
-        info.payer_name ? `Payer: ${info.payer_name}` : null,
-        info.member_id ? `Member ID: ${info.member_id}` : null,
-        info.group_number ? `Group: ${info.group_number}` : null,
-        info.address ? `Address: ${info.address}` : null,
-      ].filter(Boolean).join('\n');
-
       Alert.alert(
-        'Document Scanned ✓',
-        extracted || 'Document scanned. No recognizable fields found.',
+        `${DOC_TYPES.find(d => d.key === docType)?.label} Scanned ✓`,
+        summary || 'Document processed successfully.',
         [{ text: 'OK' }]
       );
     } catch (err: any) {
@@ -89,17 +163,15 @@ export default function CaptureScreen() {
 
       const msg: string = err?.message || '';
       const isApiKeyError =
-        msg.includes('400') ||
-        msg.includes('401') ||
-        msg.includes('Anthropic') ||
-        msg.includes('authentication') ||
+        msg.includes('400') || msg.includes('401') ||
+        msg.includes('Anthropic') || msg.includes('authentication') ||
         msg.includes('API key');
 
       Alert.alert(
         isApiKeyError ? 'AI Service Not Configured' : 'Scan Error',
         isApiKeyError
-          ? 'The document scanning service needs an Anthropic API key.\n\nGo to: Supabase Dashboard → Edge Functions → Secrets → add ANTHROPIC_API_KEY.\n\nYou can still enter patient info manually.'
-          : 'Could not extract info automatically. You can enter the details manually instead.',
+          ? 'The document scanning service needs an API key.\n\nGo to: Supabase Dashboard → Edge Functions → Secrets.\n\nYou can still enter patient info manually.'
+          : `Could not extract info: ${msg}`,
         [
           { text: 'OK' },
           { text: 'Enter Manually', onPress: () => router.push('/(recording)/patient-info') },
@@ -155,6 +227,11 @@ export default function CaptureScreen() {
 
   const removeImage = (id: string) => {
     setImages(prev => prev.filter(img => img.id !== id));
+    setScanResults(prev => {
+      const copy = { ...prev };
+      delete copy[id];
+      return copy;
+    });
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
@@ -165,7 +242,7 @@ export default function CaptureScreen() {
     if (id) {
       updateSession(id, {
         capturedImages: images,
-        patientInfo,          // persist latest local patientInfo
+        patientInfo,
         status: 'reviewing',
       });
     }
@@ -192,10 +269,9 @@ export default function CaptureScreen() {
           <Ionicons name="close" size={22} color={colors.text} />
         </Pressable>
 
-        <View style={[styles.stepIndicator, { backgroundColor: colors.surfaceSecondary }]}>
-          <View style={[styles.stepDot, { backgroundColor: colors.tint }]} />
-          <View style={[styles.stepDot, { backgroundColor: colors.tint }]} />
-          <View style={[styles.stepDot, { backgroundColor: colors.border }]} />
+        <View style={[styles.titlePill, { backgroundColor: colors.surfaceSecondary }]}>
+          <Ionicons name="documents-outline" size={14} color={colors.tint} />
+          <Text style={[styles.titlePillText, { color: colors.text }]}>Capture Documents</Text>
         </View>
 
         <View style={{ width: 36 }} />
@@ -206,11 +282,11 @@ export default function CaptureScreen() {
         showsVerticalScrollIndicator={false}
       >
         <Animated.View entering={FadeInDown.duration(400)}>
-          <Text style={[styles.title, { color: colors.text }]}>Review Documents</Text>
+          <Text style={[styles.title, { color: colors.text }]}>Scan Documents</Text>
           <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
             {images.length > 0
-              ? `You captured ${images.length} document${images.length !== 1 ? 's' : ''} during the session. Add more or continue to review.`
-              : 'Photograph medication bottles, insurance cards, or other clinical documents.'}
+              ? `${images.length} document${images.length !== 1 ? 's' : ''} captured. Tap the scan button on each to extract data.`
+              : 'Photograph insurance cards, lab results, pill bottles, or medication lists.'}
           </Text>
         </Animated.View>
 
@@ -247,46 +323,83 @@ export default function CaptureScreen() {
           </Pressable>
         </Animated.View>
 
+        {/* ── Document type hint chips ── */}
+        <Animated.View entering={FadeInDown.duration(300).delay(150)} style={styles.docTypeHints}>
+          {DOC_TYPES.map(d => (
+            <View key={d.key} style={[styles.docTypeChip, { backgroundColor: colors.surfaceSecondary }]}>
+              <Ionicons name={d.icon} size={12} color={colors.tint} />
+              <Text style={[styles.docTypeChipText, { color: colors.textSecondary }]}>{d.label}</Text>
+            </View>
+          ))}
+        </Animated.View>
+
         {images.length > 0 && (
           <Animated.View entering={FadeIn.duration(300)} style={styles.imageSection}>
             <Text style={[styles.sectionLabel, { color: colors.textSecondary }]}>
               {images.length} document{images.length !== 1 ? 's' : ''} captured
             </Text>
             <View style={styles.imageGrid}>
-              {images.map((img, idx) => (
-                <Animated.View
-                  key={img.id}
-                  entering={FadeInDown.duration(300).delay(idx * 50)}
-                  style={styles.imageWrapper}
-                >
-                  <Image
-                    source={{ uri: img.uri }}
-                    style={[styles.image, { borderColor: colors.border }]}
-                    contentFit="cover"
-                  />
-                  <Pressable
-                    onPress={() => handleScanImage(img)}
-                    disabled={!!scanningId}
-                    style={[
-                      styles.scanBtn,
-                      { backgroundColor: scanningId === img.id ? colors.tint : colors.surface, borderColor: colors.border }
-                    ]}
+              {images.map((img, idx) => {
+                const result = scanResults[img.id];
+                const isScanned = !!result;
+
+                return (
+                  <Animated.View
+                    key={img.id}
+                    entering={FadeInDown.duration(300).delay(idx * 50)}
+                    style={styles.imageWrapper}
                   >
-                    {scanningId === img.id ? (
-                      <ActivityIndicator size="small" color="#fff" />
-                    ) : (
-                      <Ionicons name="scan-outline" size={14} color={colors.tint} />
+                    <Image
+                      source={{ uri: img.uri }}
+                      style={[
+                        styles.image,
+                        {
+                          borderColor: isScanned ? colors.accent : colors.border,
+                          borderWidth: isScanned ? 2 : 1,
+                        },
+                      ]}
+                      contentFit="cover"
+                    />
+                    {/* Scan button */}
+                    <Pressable
+                      onPress={() => showDocTypePicker(img)}
+                      disabled={!!scanningId}
+                      style={[
+                        styles.scanBtn,
+                        {
+                          backgroundColor: scanningId === img.id ? colors.tint :
+                            isScanned ? colors.accent : colors.surface,
+                          borderColor: isScanned ? colors.accent : colors.border,
+                        },
+                      ]}
+                    >
+                      {scanningId === img.id ? (
+                        <ActivityIndicator size="small" color="#fff" />
+                      ) : isScanned ? (
+                        <Ionicons name="checkmark" size={14} color="#fff" />
+                      ) : (
+                        <Ionicons name="scan-outline" size={14} color={colors.tint} />
+                      )}
+                    </Pressable>
+                    {/* Remove button */}
+                    <Pressable
+                      onPress={() => removeImage(img.id)}
+                      style={[styles.removeBtn, { backgroundColor: colors.recording }]}
+                      hitSlop={8}
+                    >
+                      <Ionicons name="close" size={14} color="#fff" />
+                    </Pressable>
+                    {/* Scanned type label */}
+                    {isScanned && (
+                      <View style={[styles.scannedLabel, { backgroundColor: colors.accent }]}>
+                        <Text style={styles.scannedLabelText}>
+                          {DOC_TYPES.find(d => d.key === result.type)?.label.split(' ')[0] || 'Scanned'}
+                        </Text>
+                      </View>
                     )}
-                  </Pressable>
-                  <Pressable
-                    onPress={() => removeImage(img.id)}
-                    style={[styles.removeBtn, { backgroundColor: colors.recording }]}
-                    hitSlop={8}
-                  >
-                    <Ionicons name="close" size={14} color="#fff" />
-                  </Pressable>
-                </Animated.View>
-              ))}
+                  </Animated.View>
+                );
+              })}
             </View>
 
             {/* Show extracted info if any field was found */}
@@ -294,7 +407,7 @@ export default function CaptureScreen() {
               <Animated.View entering={FadeIn.duration(400)} style={[styles.infoPreview, { backgroundColor: colors.surface, borderColor: colors.border }]}>
                 <View style={styles.infoPreviewHeader}>
                   <Ionicons name="checkmark-circle" size={18} color={colors.accent} />
-                  <Text style={[styles.infoPreviewTitle, { color: colors.text }]}>Extracted Information</Text>
+                  <Text style={[styles.infoPreviewTitle, { color: colors.text }]}>Extracted Patient Info</Text>
                 </View>
                 <View style={styles.infoGrid}>
                   {patientInfo.name && (
@@ -336,6 +449,42 @@ export default function CaptureScreen() {
                 </View>
               </Animated.View>
             )}
+
+            {/* Show extracted medications */}
+            {extractedMeds.length > 0 && (
+              <Animated.View entering={FadeIn.duration(400)} style={[styles.infoPreview, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                <View style={styles.infoPreviewHeader}>
+                  <Ionicons name="medical" size={18} color={colors.tint} />
+                  <Text style={[styles.infoPreviewTitle, { color: colors.text }]}>
+                    Extracted Medications ({extractedMeds.length})
+                  </Text>
+                </View>
+                {extractedMeds.map((med, i) => (
+                  <View key={i} style={[styles.medRow, i > 0 && { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border }]}>
+                    <Text style={[styles.medName, { color: colors.text }]}>{med.name}</Text>
+                    <Text style={[styles.medDetail, { color: colors.textSecondary }]}>
+                      {[med.dose, med.frequency, med.route].filter(Boolean).join(' · ')}
+                    </Text>
+                    {med.notes && (
+                      <Text style={[styles.medNotes, { color: colors.textTertiary }]}>{med.notes}</Text>
+                    )}
+                  </View>
+                ))}
+              </Animated.View>
+            )}
+
+            {/* Show extracted clinical text */}
+            {extractedClinicalText && (
+              <Animated.View entering={FadeIn.duration(400)} style={[styles.infoPreview, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                <View style={styles.infoPreviewHeader}>
+                  <Ionicons name="flask" size={18} color={colors.warning} />
+                  <Text style={[styles.infoPreviewTitle, { color: colors.text }]}>Extracted Clinical Data</Text>
+                </View>
+                <Text style={[styles.clinicalText, { color: colors.text }]} numberOfLines={15}>
+                  {extractedClinicalText}
+                </Text>
+              </Animated.View>
+            )}
           </Animated.View>
         )}
 
@@ -351,7 +500,7 @@ export default function CaptureScreen() {
               No documents captured yet
             </Text>
             <Text style={[styles.emptySubText, { color: colors.textTertiary }]}>
-              Use the buttons above to photograph insurance cards, medication bottles, or clinical documents.
+              Use the buttons above to photograph insurance cards, lab results, pill bottles, or medication lists.
             </Text>
           </Animated.View>
         )}
@@ -414,17 +563,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  stepIndicator: {
+  titlePill: {
     flexDirection: 'row',
+    alignItems: 'center',
     gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 20,
   },
-  stepDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+  titlePillText: {
+    fontSize: 14,
+    fontFamily: 'Inter_600SemiBold',
   },
   scrollContent: {
     paddingHorizontal: 24,
@@ -458,6 +607,28 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_600SemiBold',
     color: '#fff',
   },
+
+  // Doc type hint chips
+  docTypeHints: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: -12,
+  },
+  docTypeChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+  },
+  docTypeChipText: {
+    fontSize: 11,
+    fontFamily: 'Inter_500Medium',
+  },
+
+  // Image section
   imageSection: {
     gap: 12,
   },
@@ -479,7 +650,6 @@ const styles = StyleSheet.create({
     width: 100,
     height: 100,
     borderRadius: 12,
-    borderWidth: 1,
   },
   removeBtn: {
     position: 'absolute',
@@ -509,8 +679,25 @@ const styles = StyleSheet.create({
     shadowRadius: 3,
     elevation: 2,
   },
+  scannedLabel: {
+    position: 'absolute',
+    bottom: -6,
+    left: -4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+    zIndex: 10,
+  },
+  scannedLabelText: {
+    fontSize: 9,
+    fontFamily: 'Inter_700Bold',
+    color: '#fff',
+    textTransform: 'uppercase',
+  },
+
+  // Extracted info preview
   infoPreview: {
-    marginTop: 16,
+    marginTop: 12,
     padding: 16,
     borderRadius: 14,
     borderWidth: 1,
@@ -543,6 +730,35 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: 'Inter_600SemiBold',
   },
+
+  // Medication rows
+  medRow: {
+    paddingVertical: 8,
+  },
+  medName: {
+    fontSize: 14,
+    fontFamily: 'Inter_600SemiBold',
+  },
+  medDetail: {
+    fontSize: 12,
+    fontFamily: 'Inter_400Regular',
+    marginTop: 2,
+  },
+  medNotes: {
+    fontSize: 11,
+    fontFamily: 'Inter_400Regular',
+    fontStyle: 'italic',
+    marginTop: 2,
+  },
+
+  // Clinical text
+  clinicalText: {
+    fontSize: 13,
+    fontFamily: 'Inter_400Regular',
+    lineHeight: 20,
+  },
+
+  // Empty state
   emptyState: {
     alignItems: 'center',
     paddingVertical: 40,
@@ -568,6 +784,8 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     maxWidth: 280,
   },
+
+  // Manual entry button
   manualBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -585,6 +803,8 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_400Regular',
     marginTop: 2,
   },
+
+  // Footer
   footer: {
     paddingHorizontal: 24,
     paddingTop: 12,
