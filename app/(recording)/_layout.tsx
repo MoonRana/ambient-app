@@ -9,6 +9,7 @@ export default function RecordingLayout() {
         animation: "slide_from_right",
       }}
     >
+      <Stack.Screen name="encounter-picker" />
       <Stack.Screen name="permission" />
       <Stack.Screen name="record" />
       <Stack.Screen name="capture" />

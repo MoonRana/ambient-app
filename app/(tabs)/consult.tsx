@@ -1,9 +1,10 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
     View, Text, StyleSheet, Pressable, Platform,
-    ScrollView, TextInput, FlatList, Linking,
+    ScrollView, TextInput, FlatList, Linking, Alert,
     KeyboardAvoidingView, ActivityIndicator, Keyboard,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -335,6 +336,10 @@ function ConsultScreen() {
         setSelectedSpecialty,
         sendQuestion,
         newCase,
+        attachedDocument,
+        isExtracting,
+        attachDocument,
+        clearDocument,
     } = useConsult();
 
     const [input, setInput] = useState('');
@@ -342,6 +347,9 @@ function ConsultScreen() {
     const inputRef = useRef<TextInput>(null);
 
     const [keyboardOpen, setKeyboardOpen] = useState(false);
+    const isNearBottomRef = useRef(true);
+    const userScrolledRef = useRef(false);
+    const [showScrollToBottom, setShowScrollToBottom] = useState(false);
 
     useEffect(() => {
         const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
@@ -351,12 +359,42 @@ function ConsultScreen() {
         return () => { show.remove(); hide.remove(); };
     }, []);
 
-    // Auto-scroll to bottom as new content arrives
+    // Smart auto-scroll: only scroll if user is near the bottom
     useEffect(() => {
-        if (messages.length > 0) {
+        if (messages.length > 0 && isNearBottomRef.current && !userScrolledRef.current) {
             setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 50);
         }
     }, [messages.length, messages[messages.length - 1]?.content]);
+
+    // When user sends a new message, always scroll to bottom
+    const scrollToBottom = useCallback(() => {
+        isNearBottomRef.current = true;
+        userScrolledRef.current = false;
+        setShowScrollToBottom(false);
+        setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 50);
+    }, []);
+
+    // Track user scroll position
+    const handleScroll = useCallback((e: any) => {
+        const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+        const distanceFromBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
+        const nearBottom = distanceFromBottom < 80;
+        isNearBottomRef.current = nearBottom;
+        setShowScrollToBottom(!nearBottom && isStreaming);
+    }, [isStreaming]);
+
+    const handleScrollBeginDrag = useCallback(() => {
+        // User intentionally scrolled
+        userScrolledRef.current = true;
+    }, []);
+
+    const handleScrollEndDrag = useCallback(() => {
+        // If user scrolled back to bottom, resume auto-scroll
+        if (isNearBottomRef.current) {
+            userScrolledRef.current = false;
+            setShowScrollToBottom(false);
+        }
+    }, []);
 
     const handleSend = useCallback(() => {
         const text = input.trim();
@@ -367,7 +405,9 @@ function ConsultScreen() {
         sendQuestion(text);
         setInput('');
         inputRef.current?.blur();
-    }, [input, isStreaming, sendQuestion]);
+        // Always scroll to bottom when sending
+        scrollToBottom();
+    }, [input, isStreaming, sendQuestion, scrollToBottom]);
 
     const handleNewCase = useCallback(() => {
         if (Platform.OS !== 'web') {
@@ -376,6 +416,23 @@ function ConsultScreen() {
         newCase();
         setInput('');
     }, [newCase]);
+
+    const handleCameraCapture = useCallback(async () => {
+        const { status } = await ImagePicker.requestCameraPermissionsAsync();
+        if (status !== 'granted') {
+            Alert.alert('Permission Needed', 'Camera access is required to scan documents.');
+            return;
+        }
+        const result = await ImagePicker.launchCameraAsync({
+            quality: 0.8,
+            allowsEditing: false,
+        });
+        if (result.canceled || !result.assets?.[0]?.uri) return;
+        if (Platform.OS !== 'web') {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        }
+        await attachDocument(result.assets[0].uri);
+    }, [attachDocument]);
 
     const webTopInset = Platform.OS === 'web' ? 67 : 0;
 
@@ -480,6 +537,7 @@ function ConsultScreen() {
                     </Animated.View>
                 </View>
             ) : (
+                <>
                 <FlatList
                     ref={listRef}
                     data={messages}
@@ -490,8 +548,33 @@ function ConsultScreen() {
                         { paddingBottom: 12 },
                     ]}
                     showsVerticalScrollIndicator={false}
-                    onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
+                    onScroll={handleScroll}
+                    onScrollBeginDrag={handleScrollBeginDrag}
+                    onScrollEndDrag={handleScrollEndDrag}
+                    scrollEventThrottle={100}
+                    onContentSizeChange={() => {
+                        if (isNearBottomRef.current && !userScrolledRef.current) {
+                            listRef.current?.scrollToEnd({ animated: true });
+                        }
+                    }}
                 />
+
+                {/* Scroll-to-bottom FAB when user scrolled up during streaming */}
+                {showScrollToBottom && (
+                    <Pressable
+                        onPress={scrollToBottom}
+                        style={({ pressed }) => [
+                            styles.scrollFab,
+                            {
+                                backgroundColor: colors.tint,
+                                opacity: pressed ? 0.8 : 0.95,
+                            },
+                        ]}
+                    >
+                        <Ionicons name="chevron-down" size={20} color="#fff" />
+                    </Pressable>
+                )}
+                </>
             )}
 
             {/* ── Input bar ── */}
@@ -505,27 +588,77 @@ function ConsultScreen() {
                     backgroundColor: colors.background,
                 },
             ]}>
+                {/* Attachment banner */}
+                {attachedDocument && (
+                    <Animated.View
+                        entering={FadeInDown.duration(200)}
+                        style={[
+                            styles.attachBanner,
+                            { backgroundColor: `${colors.accent}12`, borderColor: colors.accent },
+                        ]}
+                    >
+                        <Ionicons name="document-text" size={16} color={colors.accent} />
+                        <Text
+                            style={[styles.attachText, { color: colors.accent }]}
+                            numberOfLines={2}
+                        >
+                            Clinical document attached
+                        </Text>
+                        <Pressable onPress={clearDocument} hitSlop={8}>
+                            <Ionicons name="close-circle" size={18} color={colors.textTertiary} />
+                        </Pressable>
+                    </Animated.View>
+                )}
+
+                {/* Extracting indicator */}
+                {isExtracting && (
+                    <View style={[styles.extractingBar, { backgroundColor: colors.surfaceSecondary }]}>
+                        <ActivityIndicator size="small" color={colors.tint} />
+                        <Text style={[styles.extractingText, { color: colors.textSecondary }]}>
+                            Scanning document...
+                        </Text>
+                    </View>
+                )}
+
                 <View style={[styles.inputWrapper, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                    {/* Camera button */}
+                    <Pressable
+                        onPress={handleCameraCapture}
+                        disabled={isExtracting || isStreaming}
+                        style={({ pressed }) => [
+                            styles.cameraBtn,
+                            { opacity: (isExtracting || isStreaming) ? 0.4 : pressed ? 0.7 : 1 },
+                        ]}
+                    >
+                        <Ionicons
+                            name="camera-outline"
+                            size={22}
+                            color={attachedDocument ? colors.accent : colors.textTertiary}
+                        />
+                    </Pressable>
+
                     <TextInput
                         ref={inputRef}
                         style={[styles.textInput, { color: colors.text }]}
-                        placeholder="Ask a clinical question..."
+                        placeholder={attachedDocument ? "Ask about this document..." : "Ask a clinical question..."}
                         placeholderTextColor={colors.textTertiary}
                         value={input}
                         onChangeText={setInput}
                         multiline
                         maxLength={2000}
-                        editable={!isStreaming}
+                        editable={!isStreaming && !isExtracting}
                         onSubmitEditing={handleSend}
                         blurOnSubmit={false}
                     />
                     <Pressable
                         onPress={handleSend}
-                        disabled={!input.trim() || isStreaming}
+                        disabled={(!input.trim() && !attachedDocument) || isStreaming || isExtracting}
                         style={({ pressed }) => [
                             styles.sendBtn,
                             {
-                                backgroundColor: input.trim() && !isStreaming ? colors.tint : colors.surfaceSecondary,
+                                backgroundColor: (input.trim() || attachedDocument) && !isStreaming
+                                    ? colors.tint
+                                    : colors.surfaceSecondary,
                                 opacity: pressed ? 0.8 : 1,
                             },
                         ]}
@@ -536,7 +669,7 @@ function ConsultScreen() {
                             <Ionicons
                                 name="arrow-up"
                                 size={20}
-                                color={input.trim() ? '#fff' : colors.textTertiary}
+                                color={(input.trim() || attachedDocument) ? '#fff' : colors.textTertiary}
                             />
                         )}
                     </Pressable>
@@ -698,4 +831,32 @@ const styles = StyleSheet.create({
         alignSelf: 'flex-end',
     },
     disclaimer: { fontSize: 10, fontFamily: 'Inter_400Regular', textAlign: 'center' },
+
+    // Camera / attachment styles
+    attachBanner: {
+        flexDirection: 'row', alignItems: 'center', gap: 8,
+        paddingHorizontal: 12, paddingVertical: 8,
+        borderRadius: 12, borderWidth: 1, marginBottom: 6,
+    },
+    attachText: {
+        flex: 1, fontSize: 13, fontFamily: 'Inter_500Medium',
+    },
+    extractingBar: {
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+        gap: 8, paddingVertical: 10, borderRadius: 12, marginBottom: 6,
+    },
+    extractingText: {
+        fontSize: 13, fontFamily: 'Inter_400Regular',
+    },
+    cameraBtn: {
+        padding: 4,
+    },
+    scrollFab: {
+        position: 'absolute', alignSelf: 'center',
+        bottom: 8,
+        width: 40, height: 40, borderRadius: 20,
+        alignItems: 'center', justifyContent: 'center',
+        shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.25, shadowRadius: 4, elevation: 4,
+    },
 });

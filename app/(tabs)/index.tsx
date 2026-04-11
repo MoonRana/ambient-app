@@ -174,7 +174,7 @@ export default function HomeHub() {
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     }
-    router.push('/(recording)/permission');
+    router.push('/(recording)/encounter-picker');
   };
 
   const handleCaptureOnly = () => {
@@ -190,7 +190,12 @@ export default function HomeHub() {
     setCurrentSession(session);
     if (session.status === 'completed' || session.soapNote) {
       router.push({ pathname: '/session-detail', params: { id: session.id } });
-    } else if (session.status === 'error' || session.status === 'captured' || session.status === 'reviewing') {
+    } else if (
+      session.status === 'error' ||
+      session.status === 'captured' ||
+      session.status === 'reviewing' ||
+      session.status === 'processing' // stuck sessions can be retried
+    ) {
       router.push({ pathname: '/(recording)/review' });
     } else {
       router.push({ pathname: '/session-detail', params: { id: session.id } });

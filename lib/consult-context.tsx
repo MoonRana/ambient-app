@@ -5,10 +5,12 @@ import React, {
 import {
     fetchSpecialties,
     streamClinicalQA,
+    extractClinicalDocument,
     Specialty,
     ConsultSource,
     ConsultMetrics,
 } from './supabase-api';
+import { Alert } from 'react-native';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -26,7 +28,7 @@ export interface ConsultMessage {
     };
     /** Final performance metrics attached once done */
     doneMetrics?: ConsultMetrics;
-    error?: string; xx
+    error?: string;
 }
 
 interface ConsultContextValue {
@@ -38,6 +40,10 @@ interface ConsultContextValue {
     setSelectedSpecialty: (id: string | null) => void;
     sendQuestion: (text: string) => void;
     newCase: () => void;
+    attachedDocument: string | null;
+    isExtracting: boolean;
+    attachDocument: (imageUri: string) => Promise<void>;
+    clearDocument: () => void;
 }
 
 // ─── Context ──────────────────────────────────────────────────────────────────
@@ -71,18 +77,52 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
         };
     }, []);
 
+    const [attachedDocument, setAttachedDocument] = useState<string | null>(null);
+    const [isExtracting, setIsExtracting] = useState(false);
+
     const newCase = useCallback(() => {
         abortRef.current?.abort();
         abortRef.current = null;
         historyRef.current = [];
         setMessages([]);
         setIsStreaming(false);
+        setAttachedDocument(null);
+    }, []);
+
+    const attachDocument = useCallback(async (imageUri: string) => {
+        setIsExtracting(true);
+        try {
+            const extractedText = await extractClinicalDocument(imageUri);
+            if (extractedText) {
+                setAttachedDocument(extractedText);
+            } else {
+                Alert.alert('Extraction Failed', 'Could not read the document. Please try again with a clearer photo.');
+            }
+        } catch (e: any) {
+            console.warn('[attachDocument] Failed:', e?.message);
+            Alert.alert('Scan Error', 'Failed to process document image.');
+        } finally {
+            setIsExtracting(false);
+        }
+    }, []);
+
+    const clearDocument = useCallback(() => {
+        setAttachedDocument(null);
     }, []);
 
     const sendQuestion = useCallback((text: string) => {
         if (isStreaming || !text.trim()) return;
 
         const userMsg: ConsultMessage = { id: uid(), role: 'user', content: text.trim() };
+
+        // Build enriched question if document is attached
+        let enrichedQuestion = text.trim();
+        if (attachedDocument) {
+            enrichedQuestion =
+                `**Scanned Clinical Document:**\n${attachedDocument}\n\n` +
+                `**Question:** ${text.trim()}`;
+        }
+
         const assistantId = uid();
         const assistantMsg: ConsultMessage = {
             id: assistantId,
@@ -102,7 +142,7 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
 
         const controller = streamClinicalQA(
             {
-                question: text.trim(),
+                question: enrichedQuestion,
                 specialty_id: selectedSpecialty,
                 conversation_history: history,
             },
@@ -149,7 +189,10 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
         );
 
         abortRef.current = controller;
-    }, [isStreaming, selectedSpecialty]);
+
+        // Clear the document after sending
+        setAttachedDocument(null);
+    }, [isStreaming, selectedSpecialty, attachedDocument]);
 
     const value = useMemo<ConsultContextValue>(() => ({
         messages,
@@ -160,7 +203,11 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
         setSelectedSpecialty,
         sendQuestion,
         newCase,
-    }), [messages, isStreaming, selectedSpecialty, specialties, specialtiesLoading, sendQuestion, newCase]);
+        attachedDocument,
+        isExtracting,
+        attachDocument,
+        clearDocument,
+    }), [messages, isStreaming, selectedSpecialty, specialties, specialtiesLoading, sendQuestion, newCase, attachedDocument, isExtracting]);
 
     return (
         <ConsultContext.Provider value={value}>

@@ -215,54 +215,63 @@ export default function ReviewScreen() {
     updateSession(currentSession.id, { patientContext, status: 'processing' });
 
     if (currentSession.recordingUri) {
-      // Path A: Recording exists
+      // Path A: Recording exists — process docs + audio in parallel
       try {
         let mergedInfo = { ...currentSession.patientInfo };
         let extractedTextParts: string[] = [];
 
-        if (currentSession.capturedImages.length > 0) {
+        // Start doc extraction and audio processing concurrently
+        const docPromise = (async () => {
+          if (currentSession.capturedImages.length === 0) return;
+
           setProcessingProgress({ step: 'uploading', message: `Reading ${currentSession.capturedImages.length} document(s)...`, progress: 0.05 });
-          for (let i = 0; i < currentSession.capturedImages.length; i++) {
-            const img = currentSession.capturedImages[i];
-            setProcessingProgress({
-              step: 'uploading',
-              message: `Reading document ${i + 1} of ${currentSession.capturedImages.length}...`,
-              progress: 0.05 + (i / currentSession.capturedImages.length) * 0.1,
-            });
-            try {
-              // Run insurance-field extraction and full clinical OCR in parallel
+
+          // Process ALL images in parallel (not one by one)
+          const results = await Promise.allSettled(
+            currentSession.capturedImages.map(async (img) => {
               const [info, clinicalText] = await Promise.all([
                 analyzeInsuranceCard(img.uri),
                 extractClinicalDocument(img.uri),
               ]);
+              return { info, clinicalText };
+            })
+          );
 
-              // Merge insurance/demographic fields
-              if (info.patient_name && !mergedInfo.name) mergedInfo.name = info.patient_name;
-              if (info.date_of_birth && !mergedInfo.dateOfBirth) mergedInfo.dateOfBirth = info.date_of_birth;
-              if (info.payer_name && !mergedInfo.payerName) mergedInfo.payerName = info.payer_name;
-              if (info.member_id && !mergedInfo.memberId) mergedInfo.memberId = info.member_id;
-              if (info.group_number && !mergedInfo.groupNumber) mergedInfo.groupNumber = info.group_number;
-              if (info.address && !mergedInfo.address) mergedInfo.address = info.address;
+          results.forEach((result, i) => {
+            if (result.status !== 'fulfilled') {
+              console.warn(`OCR image ${i + 1} failed:`, result.reason);
+              return;
+            }
+            const { info, clinicalText } = result.value;
 
-              // Build document context block — insurance fields + full clinical text
-              const docParts: string[] = [];
-              const insuranceParts = [
-                info.patient_name ? `Patient Name: ${info.patient_name}` : null,
-                info.date_of_birth ? `Date of Birth: ${info.date_of_birth}` : null,
-                info.payer_name ? `Insurance: ${info.payer_name}` : null,
-                info.member_id ? `Member ID: ${info.member_id}` : null,
-                info.group_number ? `Group: ${info.group_number}` : null,
-                info.address ? `Address: ${info.address}` : null,
-              ].filter(Boolean) as string[];
-              if (insuranceParts.length > 0) docParts.push(insuranceParts.join('\n'));
-              // Append full clinical text (medications, diagnoses, vitals, labs, etc.)
-              if (clinicalText) docParts.push(clinicalText);
-              if (docParts.length > 0) extractedTextParts.push(`[Document ${i + 1}]\n${docParts.join('\n')}`);
-            } catch (e) { console.warn(`OCR image ${i + 1} failed:`, e); }
-          }
+            // Merge insurance/demographic fields
+            if (info.patient_name && !mergedInfo.name) mergedInfo.name = info.patient_name;
+            if (info.date_of_birth && !mergedInfo.dateOfBirth) mergedInfo.dateOfBirth = info.date_of_birth;
+            if (info.payer_name && !mergedInfo.payerName) mergedInfo.payerName = info.payer_name;
+            if (info.member_id && !mergedInfo.memberId) mergedInfo.memberId = info.member_id;
+            if (info.group_number && !mergedInfo.groupNumber) mergedInfo.groupNumber = info.group_number;
+            if (info.address && !mergedInfo.address) mergedInfo.address = info.address;
+
+            // Build document context block
+            const docParts: string[] = [];
+            const insuranceParts = [
+              info.patient_name ? `Patient Name: ${info.patient_name}` : null,
+              info.date_of_birth ? `Date of Birth: ${info.date_of_birth}` : null,
+              info.payer_name ? `Insurance: ${info.payer_name}` : null,
+              info.member_id ? `Member ID: ${info.member_id}` : null,
+              info.group_number ? `Group: ${info.group_number}` : null,
+              info.address ? `Address: ${info.address}` : null,
+            ].filter(Boolean) as string[];
+            if (insuranceParts.length > 0) docParts.push(insuranceParts.join('\n'));
+            if (clinicalText) docParts.push(clinicalText);
+            if (docParts.length > 0) extractedTextParts.push(`[Document ${i + 1}]\n${docParts.join('\n')}`);
+          });
+
           updateSession(currentSession.id, { patientInfo: mergedInfo });
-        }
+        })();
 
+        // Wait for docs to finish, then start audio processing with merged context
+        await docPromise;
         const documentContext = extractedTextParts.length > 0 ? extractedTextParts.join('\n\n') : undefined;
         const result = await processRecordingToSOAP(
           currentSession.recordingUri,
@@ -293,40 +302,46 @@ export default function ReviewScreen() {
 
         if (currentSession.capturedImages.length > 0) {
           setProcessingProgress({ step: 'uploading', message: `Extracting data from ${currentSession.capturedImages.length} document(s)...`, progress: 0.1 });
-          for (let i = 0; i < currentSession.capturedImages.length; i++) {
-            const img = currentSession.capturedImages[i];
-            setProcessingProgress({ step: 'uploading', message: `Reading document ${i + 1} of ${currentSession.capturedImages.length}...`, progress: 0.1 + (i / currentSession.capturedImages.length) * 0.4 });
-            try {
-              // Run insurance-field extraction and full clinical OCR in parallel
+
+          // Process ALL images in parallel
+          const results = await Promise.allSettled(
+            currentSession.capturedImages.map(async (img) => {
               const [info, clinicalText] = await Promise.all([
                 analyzeInsuranceCard(img.uri),
                 extractClinicalDocument(img.uri),
               ]);
+              return { info, clinicalText };
+            })
+          );
 
-              // Merge insurance/demographic fields
-              if (info.patient_name && !mergedInfo.name) mergedInfo.name = info.patient_name;
-              if (info.date_of_birth && !mergedInfo.dateOfBirth) mergedInfo.dateOfBirth = info.date_of_birth;
-              if (info.payer_name && !mergedInfo.payerName) mergedInfo.payerName = info.payer_name;
-              if (info.member_id && !mergedInfo.memberId) mergedInfo.memberId = info.member_id;
-              if (info.group_number && !mergedInfo.groupNumber) mergedInfo.groupNumber = info.group_number;
-              if (info.address && !mergedInfo.address) mergedInfo.address = info.address;
+          results.forEach((result, i) => {
+            if (result.status !== 'fulfilled') {
+              console.warn(`OCR image ${i + 1} failed:`, result.reason);
+              return;
+            }
+            const { info, clinicalText } = result.value;
 
-              // Build document context block — insurance fields + full clinical text
-              const docParts: string[] = [];
-              const insuranceParts = [
-                info.patient_name ? `Patient Name: ${info.patient_name}` : null,
-                info.date_of_birth ? `Date of Birth: ${info.date_of_birth}` : null,
-                info.payer_name ? `Insurance: ${info.payer_name}` : null,
-                info.member_id ? `Member ID: ${info.member_id}` : null,
-                info.group_number ? `Group: ${info.group_number}` : null,
-                info.address ? `Address: ${info.address}` : null,
-              ].filter(Boolean) as string[];
-              if (insuranceParts.length > 0) docParts.push(insuranceParts.join('\n'));
-              // Append full clinical text (medications, diagnoses, vitals, labs, etc.)
-              if (clinicalText) docParts.push(clinicalText);
-              if (docParts.length > 0) extractedTextParts.push(`[Document ${i + 1}]\n${docParts.join('\n')}`);
-            } catch (e) { console.warn(`OCR image ${i + 1} failed:`, e); }
-          }
+            if (info.patient_name && !mergedInfo.name) mergedInfo.name = info.patient_name;
+            if (info.date_of_birth && !mergedInfo.dateOfBirth) mergedInfo.dateOfBirth = info.date_of_birth;
+            if (info.payer_name && !mergedInfo.payerName) mergedInfo.payerName = info.payer_name;
+            if (info.member_id && !mergedInfo.memberId) mergedInfo.memberId = info.member_id;
+            if (info.group_number && !mergedInfo.groupNumber) mergedInfo.groupNumber = info.group_number;
+            if (info.address && !mergedInfo.address) mergedInfo.address = info.address;
+
+            const docParts: string[] = [];
+            const insuranceParts = [
+              info.patient_name ? `Patient Name: ${info.patient_name}` : null,
+              info.date_of_birth ? `Date of Birth: ${info.date_of_birth}` : null,
+              info.payer_name ? `Insurance: ${info.payer_name}` : null,
+              info.member_id ? `Member ID: ${info.member_id}` : null,
+              info.group_number ? `Group: ${info.group_number}` : null,
+              info.address ? `Address: ${info.address}` : null,
+            ].filter(Boolean) as string[];
+            if (insuranceParts.length > 0) docParts.push(insuranceParts.join('\n'));
+            if (clinicalText) docParts.push(clinicalText);
+            if (docParts.length > 0) extractedTextParts.push(`[Document ${i + 1}]\n${docParts.join('\n')}`);
+          });
+
           updateSession(currentSession.id, { patientInfo: mergedInfo });
         }
 
@@ -540,6 +555,32 @@ export default function ReviewScreen() {
                 <Text style={styles.generateBtnText}>Generate SOAP Note</Text>
               </Pressable>
             </View>
+
+            {/* Flexibility buttons — add more data before generating */}
+            <View style={styles.flexBtnsRow}>
+              {!currentSession?.recordingUri && (
+                <Pressable
+                  onPress={() => router.push('/(recording)/record')}
+                  style={({ pressed }) => [
+                    styles.flexBtn,
+                    { backgroundColor: colors.surface, borderColor: colors.border, opacity: pressed ? 0.85 : 1 },
+                  ]}
+                >
+                  <Ionicons name="mic-outline" size={18} color={colors.tint} />
+                  <Text style={[styles.flexBtnText, { color: colors.tint }]}>Add Recording</Text>
+                </Pressable>
+              )}
+              <Pressable
+                onPress={() => router.push('/(recording)/capture')}
+                style={({ pressed }) => [
+                  styles.flexBtn,
+                  { backgroundColor: colors.surface, borderColor: colors.border, opacity: pressed ? 0.85 : 1 },
+                ]}
+              >
+                <Ionicons name="camera-outline" size={18} color={colors.tint} />
+                <Text style={[styles.flexBtnText, { color: colors.tint }]}>Add Documents</Text>
+              </Pressable>
+            </View>
           </Animated.View>
         )}
 
@@ -705,6 +746,16 @@ const styles = StyleSheet.create({
   generateBtnText: { fontSize: 16, fontFamily: 'Inter_600SemiBold', color: '#fff' },
 
   soapContainer: { gap: 12 },
+  flexBtnsRow: {
+    flexDirection: 'row', gap: 10, marginTop: 12,
+  },
+  flexBtn: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 6, paddingVertical: 12, borderRadius: 12, borderWidth: 1,
+  },
+  flexBtnText: {
+    fontSize: 13, fontFamily: 'Inter_600SemiBold',
+  },
   patientBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     padding: 14, borderRadius: 14, borderWidth: 1,

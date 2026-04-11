@@ -20,7 +20,7 @@ import { useSessions, CapturedImage } from '@/lib/session-context';
 import WaveformVisualizer from '@/components/WaveformVisualizer';
 import { useEffectiveColorScheme } from '@/lib/settings-context';
 import { playRecordingStart, playRecordingStop } from '@/lib/recording-sounds';
-import { analyzeInsuranceCard } from '@/lib/supabase-api';
+import { analyzeInsuranceCard, copyToPersistentStorage } from '@/lib/supabase-api';
 import { LinearGradient } from 'expo-linear-gradient';
 
 type RecordingState = 'idle' | 'recording' | 'paused';
@@ -156,7 +156,7 @@ export default function RecordScreen() {
     } catch (err) { console.error('Failed to resume', err); }
   };
 
-  // ── KEY CHANGE: Stop → immediately go back to Home (inbox), process in background ──
+  // ── KEY CHANGE: Stop → offer Process or Save for Later ──
   const stopRecording = async () => {
     try {
       stopTimer();
@@ -169,9 +169,19 @@ export default function RecordScreen() {
         setRecordingState('idle');
 
         if (currentSession) {
+          // Copy audio to persistent storage so it survives cache clears
+          let persistentUri = uri;
+          if (uri) {
+            try {
+              persistentUri = await copyToPersistentStorage(uri, currentSession.id);
+            } catch (e) {
+              console.warn('Failed to copy to persistent storage, using temp URI:', e);
+            }
+          }
+
           updateSession(currentSession.id, {
             recordingDuration: elapsed,
-            recordingUri: uri || undefined,
+            recordingUri: persistentUri || undefined,
             status: 'captured',
             capturedImages,
           });
@@ -185,12 +195,30 @@ export default function RecordScreen() {
 
         playRecordingStop();
 
-        // Go to capture if docs, else straight to review
-        if (capturedImages.length > 0) {
-          router.push('/(recording)/capture');
-        } else {
-          router.push('/(recording)/review');
-        }
+        // Offer choice: process now or save for later
+        Alert.alert(
+          'Recording Saved',
+          `${formatTime(elapsed)} recorded${capturedImages.length > 0 ? ` with ${capturedImages.length} document${capturedImages.length !== 1 ? 's' : ''}` : ''}. What would you like to do?`,
+          [
+            {
+              text: 'Generate Note Now',
+              onPress: () => {
+                if (capturedImages.length > 0) {
+                  router.push('/(recording)/capture');
+                } else {
+                  router.push('/(recording)/review');
+                }
+              },
+            },
+            {
+              text: 'Save & Continue Later',
+              style: 'cancel',
+              onPress: () => {
+                router.dismissAll();
+              },
+            },
+          ],
+        );
       }
     } catch (err) { console.error('Failed to stop recording', err); }
   };

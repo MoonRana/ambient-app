@@ -32,50 +32,78 @@ function formatFullDate(timestamp: number): string {
   });
 }
 
-function getResumeInfo(session: AmbientSession): {
-  canResume: boolean;
+function getResumeActions(session: AmbientSession): Array<{
   label: string;
   icon: keyof typeof Ionicons.glyphMap;
   description: string;
   route: string;
-} {
-  if (session.soapNote) {
-    return {
-      canResume: false,
-      label: 'Note Complete',
-      icon: 'checkmark-circle',
-      description: 'SOAP note has been generated.',
-      route: '',
-    };
+  primary?: boolean;
+}> {
+  const actions: ReturnType<typeof getResumeActions> = [];
+
+  if (session.soapNote && session.savedToCloud) {
+    // Fully complete — no actions
+    return actions;
   }
+
+  // Can always add more documents
+  if (!session.soapNote) {
+    actions.push({
+      label: 'Add Documents',
+      icon: 'camera-outline',
+      description: 'Capture more insurance cards, lab results, or clinical docs.',
+      route: '/(recording)/capture',
+    });
+  }
+
+  // Can add recording if none exists yet
+  if (!session.recordingUri && !session.soapNote) {
+    actions.push({
+      label: 'Add Recording',
+      icon: 'mic-outline',
+      description: 'Record the patient encounter to generate a richer note.',
+      route: '/(recording)/record',
+      primary: true,
+    });
+  }
+
+  // Can generate note if has recording or images
+  if (session.recordingUri || session.capturedImages.length > 0) {
+    if (!session.soapNote) {
+      actions.push({
+        label: 'Generate Note',
+        icon: 'sparkles',
+        description: 'Process recording and documents into a SOAP note.',
+        route: '/(recording)/review',
+        primary: true,
+      });
+    }
+  }
+
+  // Retry on error / stuck processing
   if (session.status === 'error' || session.status === 'processing') {
-    return {
-      canResume: true,
-      label: 'Retry SOAP Generation',
+    // Move to front
+    actions.unshift({
+      label: 'Retry Generation',
       icon: 'refresh-circle',
-      description: 'Previous generation failed. Tap to retry from the review screen.',
+      description: 'Previous generation failed. Tap to retry.',
       route: '/(recording)/review',
-    };
+      primary: true,
+    });
   }
-  if (session.status === 'captured' || session.status === 'reviewing') {
-    return {
-      canResume: true,
-      label: 'Resume & Generate Note',
-      icon: 'play-circle',
-      description: 'Continue from where you left off — generate the SOAP note.',
+
+  // Can re-save completed note
+  if (session.soapNote && !session.savedToCloud) {
+    actions.push({
+      label: 'Save to Cloud',
+      icon: 'cloud-upload-outline',
+      description: 'Save the generated SOAP note to your patient records.',
       route: '/(recording)/review',
-    };
+      primary: true,
+    });
   }
-  if (session.status === 'recording' || session.status === 'completed') {
-    return {
-      canResume: session.recordingUri != null,
-      label: 'Resume Encounter',
-      icon: 'arrow-forward-circle',
-      description: 'Resume this encounter and generate a SOAP note.',
-      route: '/(recording)/review',
-    };
-  }
-  return { canResume: false, label: '', icon: 'ellipse', description: '', route: '' };
+
+  return actions;
 }
 
 function buildNoteText(session: AmbientSession): string {
@@ -129,7 +157,7 @@ export default function SessionDetailScreen() {
     );
   };
 
-  const handleResume = () => {
+  const handleResumeAction = (route: string) => {
     if (!session) return;
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
@@ -139,7 +167,7 @@ export default function SessionDetailScreen() {
     }
 
     setCurrentSession(getSession(session.id) ?? session);
-    router.push({ pathname: '/(recording)/review' });
+    router.push({ pathname: route as any });
   };
 
   const handleShare = async () => {
@@ -178,7 +206,7 @@ export default function SessionDetailScreen() {
     );
   }
 
-  const resumeInfo = getResumeInfo(session);
+  const resumeActions = getResumeActions(session);
   const statusColor =
     session.status === 'completed' ? colors.accent :
       session.status === 'error' ? colors.recording :
@@ -295,23 +323,31 @@ export default function SessionDetailScreen() {
           </Animated.View>
         )}
 
-        {/* ── Resume Encounter CTA ── */}
-        {resumeInfo.canResume && (
-          <Animated.View entering={FadeInDown.duration(400).delay(130)}>
-            <Pressable
-              onPress={handleResume}
-              style={({ pressed }) => [
-                styles.resumeBtn,
-                { backgroundColor: colors.tint, opacity: pressed ? 0.88 : 1 },
-              ]}
-            >
-              <Ionicons name={resumeInfo.icon} size={22} color="#fff" />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.resumeBtnTitle}>{resumeInfo.label}</Text>
-                <Text style={styles.resumeBtnSub}>{resumeInfo.description}</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color="rgba(255,255,255,0.7)" />
-            </Pressable>
+        {/* ── Resume / Action Buttons ── */}
+        {resumeActions.length > 0 && (
+          <Animated.View entering={FadeInDown.duration(400).delay(130)} style={styles.actionBtnsContainer}>
+            {resumeActions.map((action, idx) => (
+              <Pressable
+                key={action.label}
+                onPress={() => handleResumeAction(action.route)}
+                style={({ pressed }) => [
+                  styles.resumeBtn,
+                  {
+                    backgroundColor: action.primary ? colors.tint : colors.surface,
+                    borderWidth: action.primary ? 0 : 1,
+                    borderColor: colors.border,
+                    opacity: pressed ? 0.88 : 1,
+                  },
+                ]}
+              >
+                <Ionicons name={action.icon} size={20} color={action.primary ? '#fff' : colors.tint} />
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.resumeBtnTitle, !action.primary && { color: colors.text }]}>{action.label}</Text>
+                  <Text style={[styles.resumeBtnSub, !action.primary && { color: colors.textSecondary }]}>{action.description}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={action.primary ? 'rgba(255,255,255,0.7)' : colors.textTertiary} />
+              </Pressable>
+            ))}
           </Animated.View>
         )}
 
@@ -475,6 +511,7 @@ const styles = StyleSheet.create({
   },
   errorBannerText: { flex: 1, fontSize: 13, fontFamily: 'Inter_400Regular', lineHeight: 18 },
 
+  actionBtnsContainer: { gap: 8 },
   resumeBtn: {
     flexDirection: 'row', alignItems: 'center',
     gap: 12, padding: 16, borderRadius: 16,

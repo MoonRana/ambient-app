@@ -4,8 +4,8 @@ import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImageManipulator from 'expo-image-manipulator';
 
-const POLLING_INTERVAL = 5000;
-const MAX_ATTEMPTS = 120; // 10 minutes total (120 * 5s)
+const POLLING_INTERVAL = 2000;  // 2s for faster response (was 5s)
+const MAX_ATTEMPTS = 300;       // 300 × 2s = 10 minutes total
 
 function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -93,6 +93,100 @@ export async function uploadAudioToS3(audioUri: string, sessionId: string): Prom
     throw new Error(data.error || 'Failed to upload audio');
   }
   return data;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Safety Net: Image backup to S3
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Upload a captured image to S3 for backup.
+ * Uses the same upload-audio-to-s3 edge function (it handles any binary),
+ * or a dedicated image upload path if available.
+ * Returns the S3 URI for recovery.
+ */
+export async function uploadImageToS3(imageUri: string, sessionId: string, imageId: string): Promise<{
+  success: boolean;
+  s3_uri?: string;
+  error?: string;
+}> {
+  if (Platform.OS === 'web') {
+    // Web: skip image backup for now (less critical than mobile)
+    return { success: false, error: 'Image backup not supported on web' };
+  }
+
+  try {
+    let imageBase64: string;
+    try {
+      const manipulated = await ImageManipulator.manipulateAsync(
+        imageUri,
+        [{ resize: { width: 1200 } }],
+        { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
+      );
+      imageBase64 = await FileSystem.readAsStringAsync(manipulated.uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+    } catch {
+      imageBase64 = await FileSystem.readAsStringAsync(imageUri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+    }
+
+    const headers = await getAuthHeaders();
+    const response = await fetchWithTimeout(`${getBaseUrl()}/functions/v1/upload-audio-to-s3`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        audio_base64: imageBase64,
+        content_type: 'image/jpeg',
+        session_id: `${sessionId}/images/${imageId}`,
+      }),
+    }, 60000); // 60s timeout for image
+
+    const data = await response.json();
+    if (!response.ok) {
+      return { success: false, error: data.error || `HTTP ${response.status}` };
+    }
+
+    console.log(`[uploadImageToS3] Backed up image ${imageId} → S3`);
+    return { success: true, s3_uri: data.s3_uri };
+  } catch (e: any) {
+    console.warn(`[uploadImageToS3] Failed:`, e?.message);
+    return { success: false, error: e?.message };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Safety Net: Persistent audio file storage
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Copy a recording from its temp location to the app's persistent document
+ * directory so it survives cache clears and temp-file cleanup.
+ * Returns the new persistent URI.
+ */
+export async function copyToPersistentStorage(tempUri: string, sessionId: string): Promise<string> {
+  if (Platform.OS === 'web') return tempUri; // web doesn't have this issue
+
+  const dir = `${FileSystem.documentDirectory}recordings/`;
+  const dirInfo = await FileSystem.getInfoAsync(dir);
+  if (!dirInfo.exists) {
+    await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+  }
+
+  const ext = tempUri.includes('.webm') ? 'webm' : 'm4a';
+  const persistentUri = `${dir}${sessionId}.${ext}`;
+
+  // Check if already copied
+  const existing = await FileSystem.getInfoAsync(persistentUri);
+  if (existing.exists) {
+    console.log('[copyToPersistentStorage] Already exists:', persistentUri);
+    return persistentUri;
+  }
+
+  await FileSystem.copyAsync({ from: tempUri, to: persistentUri });
+  console.log('[copyToPersistentStorage] Copied recording to:', persistentUri);
+  return persistentUri;
 }
 
 export async function startHealthScribeJob(sessionId: string, audioS3Uri: string): Promise<{
@@ -243,7 +337,7 @@ export async function analyzeInsuranceCard(imageUri: string): Promise<{
     imageBase64 = await new Promise<string>((resolve, reject) => {
       const img = new Image();
       img.onload = () => {
-        const MAX = 1200;
+        const MAX = 1000;
         let { width, height } = img;
         if (width > MAX || height > MAX) {
           if (width > height) { height = Math.round(height * MAX / width); width = MAX; }
@@ -264,8 +358,8 @@ export async function analyzeInsuranceCard(imageUri: string): Promise<{
     try {
       const manipulated = await ImageManipulator.manipulateAsync(
         imageUri,
-        [{ resize: { width: 1200 } }],
-        { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
+        [{ resize: { width: 1000 } }],
+        { compress: 0.6, format: ImageManipulator.SaveFormat.JPEG }
       );
       imageBase64 = await FileSystem.readAsStringAsync(manipulated.uri, {
         encoding: FileSystem.EncodingType.Base64,
@@ -358,7 +452,7 @@ export async function extractClinicalDocument(imageUri: string): Promise<string 
       imageBase64 = await new Promise<string>((resolve, reject) => {
         const img = new Image();
         img.onload = () => {
-          const MAX = 1600; // slightly larger for clinical docs — more text to read
+          const MAX = 1200; // clinical docs — need readable text
           let { width, height } = img;
           if (width > MAX || height > MAX) {
             if (width > height) { height = Math.round(height * MAX / width); width = MAX; }
@@ -377,8 +471,8 @@ export async function extractClinicalDocument(imageUri: string): Promise<string 
       try {
         const manipulated = await ImageManipulator.manipulateAsync(
           imageUri,
-          [{ resize: { width: 1600 } }],
-          { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG }
+          [{ resize: { width: 1200 } }],
+          { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
         );
         imageBase64 = await FileSystem.readAsStringAsync(manipulated.uri, {
           encoding: FileSystem.EncodingType.Base64,
@@ -417,13 +511,20 @@ export async function extractClinicalDocument(imageUri: string): Promise<string 
     let data: any;
     try { data = JSON.parse(rawText); } catch { return rawText.trim() || null; }
 
-    // The edge function may return:
-    //   { text: "..." }          — free-text OCR result
-    //   { data: { ... } }        — structured fields
-    //   { raw_text: "..." }      — some implementations use this key
-    // We prefer free-text; fall back to JSON-stringifying the structured data.
-    if (typeof data?.text === 'string' && data.text.trim()) return data.text.trim();
-    if (typeof data?.raw_text === 'string' && data.raw_text.trim()) return data.raw_text.trim();
+    // Debug: log the actual API response structure
+    console.log('[extractClinicalDocument] Response keys:', Object.keys(data || {}));
+    console.log('[extractClinicalDocument] Response preview:', JSON.stringify(data).slice(0, 500));
+
+    // Try all known text keys first (the API may return any of these)
+    const textKeys = ['extracted_text', 'raw_context', 'text', 'raw_text', 'content',
+      'result', 'document_text', 'ocr_text', 'transcription', 'output', 'extraction'];
+    for (const key of textKeys) {
+      const val = data?.[key] ?? data?.data?.[key];
+      if (typeof val === 'string' && val.trim().length > 10) {
+        console.log('[extractClinicalDocument] Found text in key:', key, '- length:', val.trim().length);
+        return val.trim();
+      }
+    }
 
     // Build a human-readable summary from whatever structured fields came back
     const d = data?.data ?? data ?? {};
@@ -434,7 +535,7 @@ export async function extractClinicalDocument(imageUri: string): Promise<string 
     if (d.date_of_birth || d.dateOfBirth || d.dob)
       parts.push(`DOB: ${d.date_of_birth ?? d.dateOfBirth ?? d.dob}`);
 
-    // Medications — may come as array or string
+    // Medications
     const meds = d.medications ?? d.medication_list ?? d.meds;
     if (Array.isArray(meds) && meds.length > 0) {
       parts.push('Medications:');
@@ -467,7 +568,7 @@ export async function extractClinicalDocument(imageUri: string): Promise<string 
 
     // Vitals
     const vitals = d.vitals ?? d.vital_signs;
-    if (vitals && typeof vitals === 'object') {
+    if (vitals && typeof vitals === 'object' && !Array.isArray(vitals)) {
       const vitalParts = Object.entries(vitals)
         .filter(([, v]) => v != null && v !== '')
         .map(([k, v]) => `${k}: ${v}`);
@@ -499,11 +600,33 @@ export async function extractClinicalDocument(imageUri: string): Promise<string 
     // Narrative fields
     ['chief_complaint', 'hpi', 'history_of_present_illness', 'assessment', 'plan',
       'discharge_instructions', 'narrative', 'summary'].forEach(key => {
-        const val = d[key] ?? d[key.replace(/_/g, '')] ?? d[key.replace(/_(\w)/g, (_, c) => c.toUpperCase())];
+        const val = d[key] ?? d[key.replace(/_/g, '')] ?? d[key.replace(/_(\w)/g, (_: string, c: string) => c.toUpperCase())];
         if (typeof val === 'string' && val.trim()) {
           parts.push(`${key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}: ${val.trim()}`);
         }
       });
+
+    // Fallback: deep-scan ALL string values from the response
+    if (parts.length === 0) {
+      console.log('[extractClinicalDocument] No structured fields matched — trying deep scan...');
+      const deepStrings: string[] = [];
+      const scanObj = (obj: any, depth = 0) => {
+        if (depth > 5) return;
+        if (typeof obj === 'string' && obj.trim().length > 15) {
+          deepStrings.push(obj.trim());
+        } else if (Array.isArray(obj)) {
+          obj.forEach(item => scanObj(item, depth + 1));
+        } else if (obj && typeof obj === 'object') {
+          Object.values(obj).forEach(v => scanObj(v, depth + 1));
+        }
+      };
+      scanObj(data);
+      if (deepStrings.length > 0) {
+        const combined = deepStrings.join('\n');
+        console.log('[extractClinicalDocument] Deep scan found', deepStrings.length, 'strings,', combined.length, 'chars');
+        return combined;
+      }
+    }
 
     const result = parts.join('\n');
     console.log('[extractClinicalDocument] Extracted', parts.length, 'sections,', result.length, 'chars');
@@ -544,7 +667,7 @@ export async function extractMedications(
       imageBase64 = await new Promise<string>((resolve, reject) => {
         const img = new Image();
         img.onload = () => {
-          const MAX = 1400;
+          const MAX = 1100;
           let { width, height } = img;
           if (width > MAX || height > MAX) {
             if (width > height) { height = Math.round(height * MAX / width); width = MAX; }

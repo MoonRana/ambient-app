@@ -15,14 +15,24 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.myapp"
+      "bundleIdentifier": "com.domynote.ambient",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "DoMyNote needs microphone access to record patient encounters for SOAP note generation.",
+        "NSCameraUsageDescription": "DoMyNote needs camera access to photograph insurance cards, lab results, and prescriptions.",
+        "NSPhotoLibraryUsageDescription": "DoMyNote needs photo library access to select existing photos of medical documents.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
-      "package": "com.myapp",
+      "package": "com.domynote.ambient",
       "adaptiveIcon": {
         "backgroundColor": "#051336",
         "foregroundImage": "./assets/images/android-icon-foreground.png"
-      }
+      },
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ]
     },
     "web": {
       "favicon": "./assets/images/favicon.png"
@@ -35,7 +45,20 @@
         }
       ],
       "expo-font",
-      "expo-web-browser"
+      "expo-web-browser",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "DoMyNote needs photo library access to select medical documents.",
+          "cameraPermission": "DoMyNote needs camera access to photograph medical documents."
+        }
+      ],
+      [
+        "expo-av",
+        {
+          "microphonePermission": "DoMyNote needs microphone access to record encounters."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

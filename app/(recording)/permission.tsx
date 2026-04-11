@@ -20,7 +20,7 @@ export default function PermissionScreen() {
   const colorScheme = useEffectiveColorScheme();
   const colors = useThemeColors(colorScheme);
   const insets = useSafeAreaInsets();
-  const { createSession } = useSessions();
+  const { createSession, currentSession } = useSessions();
   const [permissionResponse, requestPermission] = Audio.usePermissions();
 
   const micPulse = useSharedValue(1);
@@ -47,7 +47,7 @@ export default function PermissionScreen() {
 
     const result = await requestPermission();
     if (result?.granted) {
-      createSession();
+      if (!currentSession) createSession();
       router.replace('/(recording)/record');
     }
   };
@@ -66,7 +66,7 @@ export default function PermissionScreen() {
 
   useEffect(() => {
     if (permissionResponse?.granted) {
-      createSession();
+      if (!currentSession) createSession();
       router.replace('/(recording)/record');
     }
   }, []);

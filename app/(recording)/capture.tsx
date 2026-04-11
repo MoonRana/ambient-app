@@ -16,6 +16,7 @@ import {
   analyzeInsuranceCard,
   extractClinicalDocument,
   extractMedications,
+  uploadImageToS3,
   type ExtractedMedication,
 } from '@/lib/supabase-api';
 import { useEffectiveColorScheme } from '@/lib/settings-context';
@@ -218,6 +219,20 @@ export default function CaptureScreen() {
 
         if (Platform.OS !== 'web') {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        }
+
+        // Auto-backup images to S3 in background (fire-and-forget)
+        const sid = sessionIdRef.current;
+        if (sid) {
+          newImages.forEach(img => {
+            uploadImageToS3(img.uri, sid, img.id).then(res => {
+              if (res.success && res.s3_uri) {
+                setImages(prev =>
+                  prev.map(i => i.id === img.id ? { ...i, s3Uri: res.s3_uri } : i)
+                );
+              }
+            }).catch(() => { /* non-fatal */ });
+          });
         }
       }
     } catch (err) {
