@@ -17,7 +17,8 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.domynote.ambient",
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "DoMyNote needs microphone access to record patient encounters for SOAP note generation.",
+        "UIBackgroundModes": ["audio", "fetch", "remote-notification"],
+        "NSMicrophoneUsageDescription": "DoMyNote needs microphone access to record patient encounters for clinical note generation.",
         "NSCameraUsageDescription": "DoMyNote needs camera access to photograph insurance cards, lab results, and prescriptions.",
         "NSPhotoLibraryUsageDescription": "DoMyNote needs photo library access to select existing photos of medical documents.",
         "ITSAppUsesNonExemptEncryption": false
@@ -31,7 +32,13 @@
       },
       "permissions": [
         "android.permission.RECORD_AUDIO",
-        "android.permission.MODIFY_AUDIO_SETTINGS"
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.CAMERA",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MICROPHONE",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.WAKE_LOCK"
       ]
     },
     "web": {
