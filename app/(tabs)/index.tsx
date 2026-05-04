@@ -103,7 +103,7 @@ function ActiveJobsBanner({
   return (
     <Animated.View entering={FadeInDown.duration(300).delay(50)}>
       <Pressable
-        onPress={() => router.push('/(tabs)/jobs' as any)}
+        onPress={() => router.navigate('/(tabs)/jobs' as any)}
         style={({ pressed }) => [
           styles.jobsBanner,
           {
@@ -428,7 +428,7 @@ export default function HomeHub() {
             Recent Encounters
           </Text>
           <Pressable
-            onPress={() => router.push('/(tabs)/history' as any)}
+            onPress={() => router.navigate('/(tabs)/history' as any)}
             hitSlop={8}
           >
             <Text style={[styles.viewAllLink, { color: colors.tint }]}>
@@ -465,7 +465,7 @@ export default function HomeHub() {
     <Animated.View entering={FadeInUp.duration(400).delay(400)} style={styles.footerSection}>
       {sessions.length > 10 && (
         <Pressable
-          onPress={() => router.push('/(tabs)/history' as any)}
+          onPress={() => router.navigate('/(tabs)/history' as any)}
           style={({ pressed }) => [
             styles.viewAllBtn,
             { opacity: pressed ? 0.7 : 1 },

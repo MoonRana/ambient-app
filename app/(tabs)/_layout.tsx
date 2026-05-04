@@ -27,6 +27,13 @@ function NativeTabLayout() {
         <Icon sf={{ default: "gearshape", selected: "gearshape.fill" }} />
         <Label>Settings</Label>
       </NativeTabs.Trigger>
+      {/* Hidden screens — no trigger so they don't show in tab bar, but still navigable */}
+      <NativeTabs.Trigger name="history" href={null}>
+        <Label>History</Label>
+      </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="jobs" href={null}>
+        <Label>Jobs</Label>
+      </NativeTabs.Trigger>
     </NativeTabs>
   );
 }

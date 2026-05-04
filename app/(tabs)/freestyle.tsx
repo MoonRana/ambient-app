@@ -99,7 +99,7 @@ export default function FreestyleScreen() {
     const jobId = await generate(activeWorkflowId);
     if (jobId) {
       if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      router.push('/(tabs)/jobs' as any);
+      router.navigate('/(tabs)/jobs' as any);
     } else {
       // generate() sets its own error state — read it fresh
       const freshError = useFreestyleGeneration.name; // just need to trigger re-render
