@@ -17,9 +17,11 @@ interface UseFreestyleGenerationReturn {
 
 /**
  * Hook to handle the full generation flow:
- * 1. Upload documents/recordings to Supabase Storage
+ * 1. Upload documents/recordings to Supabase Storage (if any)
  * 2. Call freestyle-generate edge function
  * 3. Create a job entry in the local jobs store
+ *
+ * Works with ANY combination of inputs — even notes-only.
  */
 export function useFreestyleGeneration(): UseFreestyleGenerationReturn {
   const { user } = useAuth();
@@ -44,12 +46,23 @@ export function useFreestyleGeneration(): UseFreestyleGenerationReturn {
     setSyncStatus(workflowId, 'syncing');
 
     try {
-      // 1. Upload documents to Supabase Storage
-      const uploadedDocs = [];
-      for (let i = 0; i < workflow.documents.length; i++) {
-        const doc = workflow.documents[i];
-        setUploadProgress((i / (workflow.documents.length + workflow.recordings.length)) * 100);
+      // Count total upload items for progress
+      const readyRecordings = workflow.recordings.filter(
+        (r) => r.uri && r.state !== 'idle',
+      );
+      const totalItems = workflow.documents.length + readyRecordings.length;
+      let completedItems = 0;
 
+      const updateProgress = () => {
+        completedItems++;
+        if (totalItems > 0) {
+          setUploadProgress((completedItems / totalItems) * 90); // reserve 10% for API call
+        }
+      };
+
+      // 1. Upload documents to Supabase Storage (skip if none)
+      const uploadedDocs = [];
+      for (const doc of workflow.documents) {
         try {
           let fileBase64: string;
           if (Platform.OS === 'web') {
@@ -62,7 +75,6 @@ export function useFreestyleGeneration(): UseFreestyleGenerationReturn {
               reader.readAsDataURL(blob);
             });
           } else {
-            // Compress images before upload
             if (doc.type === 'image') {
               try {
                 const manipulated = await ImageManipulator.manipulateAsync(
@@ -95,35 +107,27 @@ export function useFreestyleGeneration(): UseFreestyleGenerationReturn {
 
           if (uploadError) {
             console.warn(`Doc upload failed: ${uploadError.message}`);
-            continue;
+            // Still add to payload with empty path — edge function will skip it
+          } else {
+            uploadedDocs.push({
+              storage_path: storagePath,
+              type: doc.type,
+              name: doc.name,
+            });
           }
-
-          uploadedDocs.push({
-            storage_path: storagePath,
-            type: doc.type,
-            name: doc.name,
-          });
         } catch (e: any) {
           console.warn(`Failed to upload doc ${doc.name}:`, e?.message);
         }
+        updateProgress();
       }
 
-      // 2. Upload recordings to Supabase Storage
+      // 2. Upload recordings (skip if none)
       const uploadedRecordings = [];
-      for (let i = 0; i < workflow.recordings.length; i++) {
-        const rec = workflow.recordings[i];
-        if (!rec.uri || rec.state === 'idle') continue;
-
-        setUploadProgress(
-          ((workflow.documents.length + i) /
-            (workflow.documents.length + workflow.recordings.length)) *
-            100,
-        );
-
+      for (const rec of readyRecordings) {
         try {
           let audioBase64: string;
           if (Platform.OS === 'web') {
-            const resp = await fetch(rec.uri);
+            const resp = await fetch(rec.uri!);
             const blob = await resp.blob();
             audioBase64 = await new Promise<string>((resolve, reject) => {
               const reader = new FileReader();
@@ -132,12 +136,12 @@ export function useFreestyleGeneration(): UseFreestyleGenerationReturn {
               reader.readAsDataURL(blob);
             });
           } else {
-            audioBase64 = await FileSystem.readAsStringAsync(rec.uri, {
+            audioBase64 = await FileSystem.readAsStringAsync(rec.uri!, {
               encoding: FileSystem.EncodingType.Base64,
             });
           }
 
-          const ext = rec.uri.includes('.webm') ? 'webm' : 'm4a';
+          const ext = rec.uri!.includes('.webm') ? 'webm' : 'm4a';
           const storagePath = `freestyle/${user.id}/${workflowId}/audio/${rec.id}.${ext}`;
           const { error: uploadError } = await supabase.storage
             .from('freestyle-recordings')
@@ -148,22 +152,22 @@ export function useFreestyleGeneration(): UseFreestyleGenerationReturn {
 
           if (uploadError) {
             console.warn(`Audio upload failed: ${uploadError.message}`);
-            continue;
+          } else {
+            uploadedRecordings.push({
+              storage_path: storagePath,
+              transcript: rec.transcript,
+              duration_s: rec.duration,
+            });
           }
-
-          uploadedRecordings.push({
-            storage_path: storagePath,
-            transcript: rec.transcript,
-            duration_s: rec.duration,
-          });
         } catch (e: any) {
           console.warn(`Failed to upload recording ${rec.id}:`, e?.message);
         }
+        updateProgress();
       }
 
-      setUploadProgress(100);
+      setUploadProgress(95);
 
-      // 3. Call freestyle-generate
+      // 3. Call freestyle-generate — works with any combination of inputs
       const result = await generateFreestyle({
         patient_id: workflow.patientId,
         documents: uploadedDocs,
@@ -175,6 +179,8 @@ export function useFreestyleGeneration(): UseFreestyleGenerationReturn {
           frequency: m.frequency,
         })),
       });
+
+      setUploadProgress(100);
 
       // 4. Store job reference
       setJobId(workflowId, result.job_id);

@@ -94,21 +94,28 @@ export default function FreestyleScreen() {
 
   const handleGenerate = useCallback(async () => {
     if (!activeWorkflow || !activeWorkflowId) return;
-    if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     const jobId = await generate(activeWorkflowId);
     if (jobId) {
-      // Navigate to Jobs tab to see live progress
+      if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       router.push('/(tabs)/jobs' as any);
-    } else if (genError) {
-      Alert.alert('Generation Failed', genError, [{ text: 'OK' }]);
+    } else {
+      // generate() sets its own error state — read it fresh
+      const freshError = useFreestyleGeneration.name; // just need to trigger re-render
+      // Show alert with whatever error we have
+      setTimeout(() => {
+        const currentError = genError || 'Something went wrong. Please try again.';
+        Alert.alert('Generation Failed', currentError, [{ text: 'OK' }]);
+      }, 100);
     }
   }, [activeWorkflow, activeWorkflowId, generate, genError]);
 
   const hasAnyInput = activeWorkflow
     ? activeWorkflow.documents.length > 0 ||
       activeWorkflow.recordings.some((r) => r.state === 'stopped' || r.state === 'transcribed') ||
-      activeWorkflow.notes.trim().length > 0
+      activeWorkflow.notes.trim().length > 0 ||
+      activeWorkflow.medications.length > 0
     : false;
 
   const webTopInset = Platform.OS === 'web' ? 67 : 0;

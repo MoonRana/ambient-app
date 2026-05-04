@@ -1,13 +1,15 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   View, Text, StyleSheet, FlatList, Platform, Pressable,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { router, useFocusEffect } from 'expo-router';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import { useThemeColors } from '@/constants/colors';
 import { useEffectiveColorScheme } from '@/lib/settings-context';
 import { useJobsStore, selectRecentJobs, selectActiveJobs, type FreestyleJob, type JobStatus } from '@/lib/stores/useJobsStore';
+import { getJobStatus } from '@/lib/api/freestyle';
 
 function getStatusConfig(status: JobStatus, colors: ReturnType<typeof useThemeColors>) {
   switch (status) {
@@ -107,8 +109,47 @@ export default function JobsDashboard() {
   const colors = useThemeColors(colorScheme);
   const insets = useSafeAreaInsets();
   const jobsMap = useJobsStore((s) => s.jobs);
+  const updateJob = useJobsStore((s) => s.updateJob);
   const jobs = useMemo(() => selectRecentJobs(jobsMap), [jobsMap]);
   const activeJobs = useMemo(() => selectActiveJobs(jobsMap), [jobsMap]);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Poll active jobs from Supabase every 3s while screen is focused
+  const pollActiveJobs = useCallback(async () => {
+    const active = selectActiveJobs(useJobsStore.getState().jobs);
+    if (active.length === 0) return;
+
+    for (const job of active) {
+      try {
+        const fresh = await getJobStatus(job.id);
+        if (fresh) {
+          updateJob(job.id, {
+            status: fresh.status as JobStatus,
+            progress: fresh.progress,
+            currentStep: fresh.current_step || undefined,
+            resultNote: fresh.result_note || undefined,
+            error: fresh.error || undefined,
+            completedAt: fresh.completed_at ? new Date(fresh.completed_at).getTime() : undefined,
+          });
+        }
+      } catch (e: any) {
+        // Silently ignore poll errors — non-critical
+        console.warn(`Poll error for job ${job.id}:`, e?.message);
+      }
+    }
+  }, [updateJob]);
+
+  useFocusEffect(
+    useCallback(() => {
+      // Poll immediately on focus
+      pollActiveJobs();
+      // Then every 3s
+      pollRef.current = setInterval(pollActiveJobs, 3000);
+      return () => {
+        if (pollRef.current) clearInterval(pollRef.current);
+      };
+    }, [pollActiveJobs]),
+  );
 
   const webTopInset = Platform.OS === 'web' ? 67 : 0;
 
@@ -121,12 +162,26 @@ export default function JobsDashboard() {
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={[styles.header, { paddingTop: (Platform.OS === 'web' ? webTopInset : insets.top) + 16 }]}>
-        <Text style={[styles.title, { color: colors.text }]}>Jobs</Text>
-        <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
-          {activeJobs.length > 0
-            ? `${activeJobs.length} active · ${jobs.length} total`
-            : `${jobs.length} job${jobs.length !== 1 ? 's' : ''}`}
-        </Text>
+        <View style={styles.headerRow}>
+          <Pressable
+            onPress={() => router.back()}
+            hitSlop={12}
+            style={({ pressed }) => [
+              styles.backBtn,
+              { backgroundColor: colors.surfaceSecondary, opacity: pressed ? 0.7 : 1 },
+            ]}
+          >
+            <Ionicons name="arrow-back" size={20} color={colors.text} />
+          </Pressable>
+          <View>
+            <Text style={[styles.title, { color: colors.text }]}>Jobs</Text>
+            <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+              {activeJobs.length > 0
+                ? `${activeJobs.length} active · ${jobs.length} total`
+                : `${jobs.length} job${jobs.length !== 1 ? 's' : ''}`}
+            </Text>
+          </View>
+        </View>
       </View>
 
       <FlatList
@@ -164,6 +219,18 @@ const styles = StyleSheet.create({
   header: {
     paddingHorizontal: 20,
     paddingBottom: 16,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  backBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   title: {
     fontSize: 28,
