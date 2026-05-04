@@ -79,11 +79,29 @@ async function syncSessionToCloud(session: AmbientSession): Promise<string | nul
     const { data: { session: authSession } } = await supabase.auth.getSession();
     if (!authSession?.user?.id) return null;
 
+    // Map local statuses to DB-valid values
+    // DB check constraint allows: 'in_progress', 'completed', 'abandoned'
+    const dbStatus = (() => {
+      switch (session.status) {
+        case 'recording':
+        case 'captured':
+        case 'reviewing':
+        case 'processing':
+        case 'error': // errors are still in-progress until resolved
+          return 'in_progress';
+        case 'completed':
+          return 'completed';
+        default:
+          return 'in_progress';
+      }
+    })();
+
     const payload = {
       user_id: authSession.user.id,
-      status: session.status,
+      status: dbStatus,
       session_data: {
         local_id: session.id,
+        local_status: session.status, // preserve original for resume
         created_at: session.createdAt,
         updated_at: session.updatedAt,
         recording_duration: session.recordingDuration,
