@@ -15,9 +15,9 @@ function NativeTabLayout() {
         <Icon sf={{ default: "house", selected: "house.fill" }} />
         <Label>Home</Label>
       </NativeTabs.Trigger>
-      <NativeTabs.Trigger name="history">
-        <Icon sf={{ default: "clock", selected: "clock.fill" }} />
-        <Label>History</Label>
+      <NativeTabs.Trigger name="freestyle">
+        <Icon sf={{ default: "wand.and.stars", selected: "wand.and.stars.inverse" }} />
+        <Label>Freestyle</Label>
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="consult">
         <Icon sf={{ default: "stethoscope", selected: "stethoscope.circle.fill" }} />
@@ -78,11 +78,11 @@ function ClassicTabLayout() {
         }}
       />
       <Tabs.Screen
-        name="history"
+        name="freestyle"
         options={{
-          title: "History",
+          title: "Freestyle",
           tabBarIcon: ({ color, focused }) => (
-            <Ionicons name={focused ? "time" : "time-outline"} size={24} color={color} />
+            <Ionicons name={focused ? "sparkles" : "sparkles-outline"} size={24} color={color} />
           ),
         }}
       />
@@ -102,6 +102,21 @@ function ClassicTabLayout() {
           tabBarIcon: ({ color, focused }) => (
             <Ionicons name={focused ? "settings" : "settings-outline"} size={24} color={color} />
           ),
+        }}
+      />
+      {/* Hidden tabs — accessible via navigation but not shown in tab bar */}
+      <Tabs.Screen
+        name="history"
+        options={{
+          href: null,
+          title: "History",
+        }}
+      />
+      <Tabs.Screen
+        name="jobs"
+        options={{
+          href: null,
+          title: "Jobs",
         }}
       />
     </Tabs>

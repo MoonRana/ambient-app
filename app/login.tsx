@@ -67,9 +67,9 @@ export default function LoginScreen() {
                     <View style={[styles.logoCircle, { backgroundColor: colors.tint }]}>
                         <Ionicons name="medical" size={32} color="#fff" />
                     </View>
-                    <Text style={[styles.appName, { color: colors.text }]}>DoMyNote Ambient</Text>
+                    <Text style={[styles.appName, { color: colors.text }]}>DoMyNote</Text>
                     <Text style={[styles.tagline, { color: colors.textSecondary }]}>
-                        AI-powered clinical documentation
+                        AI-powered clinical documentation{"\n"}for busy clinicians
                     </Text>
                 </Animated.View>
 
@@ -172,7 +172,22 @@ export default function LoginScreen() {
                     </Pressable>
                 </Animated.View>
 
-                <Animated.View entering={FadeInDown.duration(500).delay(350)} style={styles.compliance}>
+                <Animated.View entering={FadeInDown.duration(500).delay(350)} style={styles.featuresRow}>
+                    {[
+                        { icon: 'mic-outline' as const, label: 'Ambient\nRecording', color: colors.recording },
+                        { icon: 'sparkles-outline' as const, label: 'AI SOAP\nNotes', color: colors.tint },
+                        { icon: 'medical-outline' as const, label: 'Clinical\nConsult', color: colors.accent },
+                    ].map((f, i) => (
+                        <View key={i} style={styles.featureCard}>
+                            <View style={[styles.featureIcon, { backgroundColor: `${f.color}15` }]}>
+                                <Ionicons name={f.icon} size={20} color={f.color} />
+                            </View>
+                            <Text style={[styles.featureLabel, { color: colors.textSecondary }]}>{f.label}</Text>
+                        </View>
+                    ))}
+                </Animated.View>
+
+                <Animated.View entering={FadeInDown.duration(500).delay(450)} style={styles.compliance}>
                     <Ionicons name="shield-checkmark" size={14} color={colors.accent} />
                     <Text style={[styles.complianceText, { color: colors.textTertiary }]}>
                         HIPAA Compliant · End-to-end encrypted
@@ -263,4 +278,27 @@ const styles = StyleSheet.create({
         gap: 6,
     },
     complianceText: { fontSize: 12, fontFamily: 'Inter_400Regular' },
+    featuresRow: {
+        flexDirection: 'row',
+        gap: 12,
+        justifyContent: 'center',
+    },
+    featureCard: {
+        alignItems: 'center',
+        gap: 8,
+        flex: 1,
+    },
+    featureIcon: {
+        width: 44,
+        height: 44,
+        borderRadius: 14,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    featureLabel: {
+        fontSize: 11,
+        fontFamily: 'Inter_500Medium',
+        textAlign: 'center',
+        lineHeight: 15,
+    },
 });

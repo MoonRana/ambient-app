@@ -4,6 +4,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import Animated, { FadeIn } from 'react-native-reanimated';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useThemeColors } from '@/constants/colors';
 import { useSettings, useEffectiveColorScheme } from '@/lib/settings-context';
@@ -122,27 +123,30 @@ export default function SettingsTab() {
       >
         <Text style={[styles.title, { color: colors.text }]}>Settings</Text>
 
-        {/* Account */}
-        <View style={styles.section}>
-          <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>Account</Text>
-          <View style={[styles.sectionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <SettingRow
-              icon="person-circle-outline"
-              iconColor={colors.tint}
-              title={user?.email || 'Unknown User'}
-              subtitle="Signed in"
-              colors={colors}
-            />
-            <SettingRow
-              icon="log-out-outline"
-              iconColor={colors.recording}
-              title="Sign Out"
-              subtitle="Sign out of your account"
-              onPress={handleSignOut}
-              colors={colors}
-            />
+        {/* Profile Card */}
+        <Animated.View style={[styles.profileCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+          <View style={[styles.profileAvatar, { backgroundColor: colors.tintLight }]}>
+            <Ionicons name="person" size={24} color={colors.tint} />
           </View>
-        </View>
+          <View style={styles.profileInfo}>
+            <Text style={[styles.profileName, { color: colors.text }]}>
+              {user?.email?.split('@')[0] || 'Doctor'}
+            </Text>
+            <Text style={[styles.profileEmail, { color: colors.textTertiary }]}>
+              {user?.email || 'Not signed in'}
+            </Text>
+          </View>
+          <Pressable
+            onPress={handleSignOut}
+            style={({ pressed }) => [
+              styles.signOutChip,
+              { backgroundColor: `${colors.recording}12`, opacity: pressed ? 0.7 : 1 },
+            ]}
+          >
+            <Ionicons name="log-out-outline" size={14} color={colors.recording} />
+            <Text style={[styles.signOutChipText, { color: colors.recording }]}>Sign Out</Text>
+          </Pressable>
+        </Animated.View>
 
         {/* Appearance */}
         <View style={styles.section}>
@@ -263,6 +267,18 @@ export default function SettingsTab() {
             />
           </View>
         </View>
+
+        {/* App Footer */}
+        <View style={styles.footerBranding}>
+          <View style={[styles.footerLogo, { backgroundColor: colors.tintLight }]}>
+            <Ionicons name="medical" size={18} color={colors.tint} />
+          </View>
+          <Text style={[styles.footerAppName, { color: colors.textSecondary }]}>DoMyNote</Text>
+          <Text style={[styles.footerVersion, { color: colors.textTertiary }]}>Version 1.0.0</Text>
+          <Text style={[styles.footerCopy, { color: colors.textTertiary }]}>
+            Made with ❤️ for clinicians
+          </Text>
+        </View>
       </ScrollView>
     </View>
   );
@@ -341,5 +357,75 @@ const styles = StyleSheet.create({
   themeOptionText: {
     fontSize: 13,
     fontFamily: 'Inter_500Medium',
+  },
+  // Profile Card
+  profileCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    marginBottom: 24,
+  },
+  profileAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileInfo: {
+    flex: 1,
+    gap: 2,
+  },
+  profileName: {
+    fontSize: 16,
+    fontFamily: 'Inter_600SemiBold',
+    textTransform: 'capitalize',
+  },
+  profileEmail: {
+    fontSize: 12,
+    fontFamily: 'Inter_400Regular',
+  },
+  signOutChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
+  signOutChipText: {
+    fontSize: 12,
+    fontFamily: 'Inter_600SemiBold',
+  },
+  // Footer
+  footerBranding: {
+    alignItems: 'center',
+    gap: 6,
+    paddingTop: 12,
+    paddingBottom: 20,
+  },
+  footerLogo: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  footerAppName: {
+    fontSize: 14,
+    fontFamily: 'Inter_600SemiBold',
+  },
+  footerVersion: {
+    fontSize: 11,
+    fontFamily: 'Inter_400Regular',
+  },
+  footerCopy: {
+    fontSize: 11,
+    fontFamily: 'Inter_400Regular',
+    marginTop: 4,
   },
 });

@@ -6,15 +6,16 @@ export default function RecordingLayout() {
     <Stack
       screenOptions={{
         headerShown: false,
-        animation: "slide_from_right",
+        animation: "fade_from_bottom",
+        animationDuration: 250,
       }}
     >
-      <Stack.Screen name="encounter-picker" />
-      <Stack.Screen name="permission" />
-      <Stack.Screen name="record" />
-      <Stack.Screen name="capture" />
-      <Stack.Screen name="review" />
-      <Stack.Screen name="patient-info" options={{ presentation: 'modal' }} />
+      <Stack.Screen name="encounter-picker" options={{ animation: "fade" }} />
+      <Stack.Screen name="permission" options={{ animation: "slide_from_right" }} />
+      <Stack.Screen name="record" options={{ animation: "slide_from_right" }} />
+      <Stack.Screen name="capture" options={{ animation: "slide_from_right" }} />
+      <Stack.Screen name="review" options={{ animation: "fade_from_bottom" }} />
+      <Stack.Screen name="patient-info" options={{ presentation: 'modal', animation: "slide_from_bottom" }} />
     </Stack>
   );
 }

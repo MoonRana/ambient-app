@@ -134,7 +134,7 @@ export default function FreestyleScreen() {
             <View>
               <Text style={[styles.headerTitle, { color: colors.text }]}>Freestyle</Text>
               <Text style={[styles.headerSub, { color: colors.textTertiary }]}>
-                Add anything, generate H&P
+                Drop in anything — get a clinical note
               </Text>
             </View>
             <View style={styles.headerActions}>
@@ -172,6 +172,35 @@ export default function FreestyleScreen() {
                 <Ionicons name="sparkles" size={16} color={showAssist ? '#fff' : colors.tint} />
               </Pressable>
             </View>
+          </View>
+
+          {/* Step indicators */}
+          <View style={styles.stepsRow}>
+            {[
+              { num: '1', label: 'Add Inputs', icon: 'add-circle-outline' as const, done: hasAnyInput },
+              { num: '2', label: 'Generate', icon: 'sparkles-outline' as const, done: false },
+              { num: '3', label: 'Review', icon: 'document-text-outline' as const, done: false },
+            ].map((step, i) => (
+              <React.Fragment key={i}>
+                {i > 0 && <View style={[styles.stepConnector, { backgroundColor: step.done ? colors.accent : colors.border }]} />}
+                <View style={styles.stepItem}>
+                  <View style={[
+                    styles.stepCircle,
+                    { backgroundColor: step.done ? `${colors.accent}18` : colors.surfaceSecondary },
+                  ]}>
+                    <Ionicons
+                      name={step.done ? 'checkmark' : step.icon}
+                      size={14}
+                      color={step.done ? colors.accent : colors.textTertiary}
+                    />
+                  </View>
+                  <Text style={[
+                    styles.stepLabel,
+                    { color: step.done ? colors.accent : colors.textTertiary },
+                  ]}>{step.label}</Text>
+                </View>
+              </React.Fragment>
+            ))}
           </View>
 
           {/* Workspace summary */}
@@ -333,6 +362,36 @@ const styles = StyleSheet.create({
   },
   assistSection: {
     paddingTop: 8,
+  },
+  stepsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 0,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+  },
+  stepItem: {
+    alignItems: 'center',
+    gap: 4,
+  },
+  stepCircle: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepLabel: {
+    fontSize: 10,
+    fontFamily: 'Inter_500Medium',
+  },
+  stepConnector: {
+    height: 2,
+    width: 32,
+    borderRadius: 1,
+    marginBottom: 16,
+    marginHorizontal: 4,
   },
   // Sticky generate
   generateBar: {
