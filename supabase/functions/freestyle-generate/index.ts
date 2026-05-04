@@ -6,6 +6,14 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+/**
+ * freestyle-generate — Background H&P generation
+ *
+ * 1. Creates a job row (returned immediately)
+ * 2. Background: transcribes audio, OCRs docs, assembles content
+ * 3. Calls existing generate-soap-note with combined transcript
+ * 4. Saves result to job row
+ */
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -15,8 +23,7 @@ serve(async (req) => {
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
       return new Response(JSON.stringify({ error: "Missing authorization" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
@@ -29,18 +36,16 @@ serve(async (req) => {
     const { data: { user }, error: authError } = await supabaseClient.auth.getUser();
     if (authError || !user) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
     const body = await req.json();
     const { patient_id, documents, recordings, notes, medications } = body;
 
-    // Log what we received for debugging
-    console.log(`[freestyle-generate] Received: notes=${notes?.length || 0} chars, meds=${medications?.length || 0}, docs=${documents?.length || 0}, recs=${recordings?.length || 0}`);
+    console.log(`[freestyle] Input: notes=${notes?.length || 0}ch, meds=${medications?.length || 0}, docs=${documents?.length || 0}, recs=${recordings?.length || 0}`);
 
-    // Create the job row
+    // Create job row — returned immediately
     const { data: job, error: insertError } = await supabaseClient
       .from("freestyle_jobs")
       .insert({
@@ -49,16 +54,7 @@ serve(async (req) => {
         status: "queued",
         progress: 0,
         current_step: "Waiting in queue",
-        inputs: {
-          document_count: documents?.length || 0,
-          recording_count: recordings?.length || 0,
-          has_notes: !!notes?.trim(),
-          medication_count: medications?.length || 0,
-          documents,
-          recordings,
-          notes,
-          medications,
-        },
+        inputs: { documents, recordings, notes, medications },
       })
       .select("id")
       .single();
@@ -66,218 +62,303 @@ serve(async (req) => {
     if (insertError) {
       console.error("Job insert failed:", insertError);
       return new Response(JSON.stringify({ error: insertError.message }), {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    // Use service role for background updates (user token may expire)
     const serviceClient = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
     );
 
-    // Kick off background processing
     EdgeRuntime?.waitUntil?.(
-      processJobAsync(serviceClient, job.id, body, user.id, authHeader),
+      processJob(serviceClient, job.id, body, user.id),
     );
 
     return new Response(
       JSON.stringify({ job_id: job.id, status: "queued" }),
-      {
-        status: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      },
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   } catch (err: any) {
     console.error("freestyle-generate error:", err);
     return new Response(
       JSON.stringify({ error: err.message || "Internal server error" }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      },
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
     );
   }
 });
 
-// ── Background Processing ────────────────────────────────────────────────────
+// ── Background Job ───────────────────────────────────────────────────────────
 
-async function processJobAsync(
-  supabase: any,
-  jobId: string,
-  inputs: any,
-  userId: string,
-  authHeader: string,
-) {
-  const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY");
+async function processJob(supabase: any, jobId: string, inputs: any, userId: string) {
+  const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY") ?? "";
   const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
-  const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+
+  const updateJob = (patch: Record<string, any>) =>
+    supabase.from("freestyle_jobs").update(patch).eq("id", jobId);
 
   try {
-    // Step 1: Gather all clinical content
-    await supabase
-      .from("freestyle_jobs")
-      .update({ status: "extracting", progress: 15, current_step: "Gathering clinical data" })
-      .eq("id", jobId);
+    // ── Step 1: Extract text from all inputs ─────────────────────────────
 
-    const allContent: string[] = [];
+    await updateJob({ status: "extracting", progress: 10, current_step: "Processing inputs" });
 
-    // Notes (typed by user)
+    const contentParts: string[] = [];
+
+    // 1a. User-typed notes
     if (inputs.notes?.trim()) {
-      allContent.push(`CLINICAL NOTES:\n${inputs.notes.trim()}`);
+      contentParts.push(`CLINICAL NOTES:\n${inputs.notes.trim()}`);
+      console.log(`[freestyle] Notes: ${inputs.notes.trim().length} chars`);
     }
 
-    // Medications
+    // 1b. Medications
     if (inputs.medications?.length > 0) {
-      const medList = inputs.medications.map((m: any) => {
-        let entry = m.medication_name || m.name || '';
-        if (m.dosage || m.dose) entry += ` ${m.dosage || m.dose}`;
-        if (m.frequency) entry += ` (${m.frequency})`;
-        return `  - ${entry}`;
+      const medLines = inputs.medications.map((m: any) => {
+        const parts = [m.medication_name || m.name, m.dosage || m.dose, m.frequency].filter(Boolean);
+        return `  - ${parts.join(' ')}`;
       }).join("\n");
-      allContent.push(`CURRENT MEDICATIONS:\n${medList}`);
+      contentParts.push(`CURRENT MEDICATIONS:\n${medLines}`);
     }
 
-    // Recording transcripts
+    // 1c. Audio recordings — transcribe if no transcript provided
     if (inputs.recordings?.length > 0) {
+      await updateJob({ progress: 20, current_step: "Transcribing audio recordings" });
+
       for (let i = 0; i < inputs.recordings.length; i++) {
         const rec = inputs.recordings[i];
-        if (rec.transcript?.trim()) {
-          allContent.push(`ENCOUNTER RECORDING ${i + 1} (${rec.duration_s || '?'}s):\n${rec.transcript.trim()}`);
-        }
-      }
-    }
 
-    // Documents — download from storage if they're images
-    if (inputs.documents?.length > 0) {
-      for (const doc of inputs.documents) {
-        if (doc.storage_path) {
+        // If transcript already exists, use it
+        if (rec.transcript?.trim()) {
+          contentParts.push(`ENCOUNTER RECORDING ${i + 1}:\n${rec.transcript.trim()}`);
+          continue;
+        }
+
+        // Otherwise, download from storage and transcribe with Whisper
+        if (rec.storage_path && OPENAI_API_KEY) {
           try {
-            const { data: urlData } = await supabase.storage
-              .from("freestyle-documents")
-              .createSignedUrl(doc.storage_path, 600);
-            if (urlData?.signedUrl) {
-              allContent.push(`UPLOADED DOCUMENT "${doc.name}" (${doc.type}): Available at signed URL`);
+            console.log(`[freestyle] Transcribing recording: ${rec.storage_path}`);
+            const { data: audioData, error: dlError } = await supabase.storage
+              .from("freestyle-recordings")
+              .download(rec.storage_path);
+
+            if (dlError || !audioData) {
+              console.warn(`[freestyle] Download failed: ${dlError?.message}`);
+              continue;
+            }
+
+            const transcript = await transcribeWithWhisper(OPENAI_API_KEY, audioData, rec.storage_path);
+            if (transcript) {
+              contentParts.push(`ENCOUNTER RECORDING ${i + 1} (${rec.duration_s || '?'}s):\n${transcript}`);
+              console.log(`[freestyle] Transcribed recording ${i + 1}: ${transcript.length} chars`);
             }
           } catch (e: any) {
-            console.warn(`Doc access failed: ${e?.message}`);
+            console.warn(`[freestyle] Transcription failed for recording ${i + 1}:`, e?.message);
           }
         }
       }
     }
 
-    console.log(`[freestyle-generate] Assembled ${allContent.length} content sections for job ${jobId}`);
+    // 1d. Documents — OCR images, extract text from PDFs
+    if (inputs.documents?.length > 0) {
+      await updateJob({ progress: 35, current_step: "Extracting text from documents" });
 
-    // Step 2: Build transcript for generate-soap-note
-    await supabase
-      .from("freestyle_jobs")
-      .update({ status: "generating", progress: 40, current_step: "Generating clinical note" })
-      .eq("id", jobId);
+      for (let i = 0; i < inputs.documents.length; i++) {
+        const doc = inputs.documents[i];
+        if (!doc.storage_path) continue;
 
-    const clinicalContext = allContent.length > 0
-      ? allContent.join("\n\n---\n\n")
-      : "No clinical information provided.";
+        try {
+          if (doc.type === 'image' && OPENAI_API_KEY) {
+            // Use OpenAI Vision to OCR the image
+            const { data: urlData } = await supabase.storage
+              .from("freestyle-documents")
+              .createSignedUrl(doc.storage_path, 600);
 
-    // Try to use the existing generate-soap-note edge function first (it's proven to work)
+            if (urlData?.signedUrl) {
+              console.log(`[freestyle] OCR-ing image: ${doc.name}`);
+              const extracted = await extractTextFromImage(OPENAI_API_KEY, urlData.signedUrl);
+              if (extracted) {
+                contentParts.push(`DOCUMENT "${doc.name}":\n${extracted}`);
+                console.log(`[freestyle] Extracted from ${doc.name}: ${extracted.length} chars`);
+              }
+            }
+          } else {
+            // For PDFs or when no API key, try the existing extract-medical-info function
+            try {
+              const { data: urlData } = await supabase.storage
+                .from("freestyle-documents")
+                .createSignedUrl(doc.storage_path, 600);
+
+              if (urlData?.signedUrl) {
+                const extractResp = await fetch(`${SUPABASE_URL}/functions/v1/fast-medical-extract`, {
+                  method: "POST",
+                  headers: {
+                    "Authorization": `Bearer ${SERVICE_KEY}`,
+                    "apikey": SERVICE_KEY,
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify({ document_url: urlData.signedUrl, document_type: doc.type }),
+                });
+
+                if (extractResp.ok) {
+                  const extractData = await extractResp.json();
+                  const text = extractData.extracted_text || extractData.text || extractData.content || JSON.stringify(extractData);
+                  if (text && text.length > 10) {
+                    contentParts.push(`DOCUMENT "${doc.name}":\n${text}`);
+                  }
+                }
+              }
+            } catch (e: any) {
+              console.warn(`[freestyle] Extraction failed for ${doc.name}:`, e?.message);
+            }
+          }
+        } catch (e: any) {
+          console.warn(`[freestyle] Doc processing failed for ${doc.name}:`, e?.message);
+        }
+      }
+    }
+
+    console.log(`[freestyle] Assembled ${contentParts.length} content sections, total chars: ${contentParts.join('').length}`);
+
+    // ── Step 2: Generate note using existing generate-soap-note ──────────
+
+    await updateJob({ status: "generating", progress: 55, current_step: "Generating clinical note" });
+
+    const combinedTranscript = contentParts.length > 0
+      ? contentParts.join("\n\n---\n\n")
+      : "No clinical information was provided for this encounter.";
+
     let resultNote: string | null = null;
 
+    // Call the proven generate-soap-note edge function
     try {
-      console.log(`[freestyle-generate] Calling generate-soap-note for job ${jobId}`);
-      const soapResponse = await fetch(`${SUPABASE_URL}/functions/v1/generate-soap-note`, {
+      console.log(`[freestyle] Calling generate-soap-note, transcript length: ${combinedTranscript.length}`);
+      const soapResp = await fetch(`${SUPABASE_URL}/functions/v1/generate-soap-note`, {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${SERVICE_ROLE_KEY}`,
-          "apikey": SERVICE_ROLE_KEY,
+          "Authorization": `Bearer ${SERVICE_KEY}`,
+          "apikey": SERVICE_KEY,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
           session_id: jobId,
-          transcript: clinicalContext,
+          transcript: combinedTranscript,
           patient_info: inputs.patient_info || {},
           medications: inputs.medications || [],
           diagnoses: [],
         }),
       });
 
-      if (soapResponse.ok) {
-        const soapData = await soapResponse.json();
+      if (soapResp.ok) {
+        const soapData = await soapResp.json();
         resultNote = soapData.full_note || null;
-        console.log(`[freestyle-generate] SOAP note generated, length: ${resultNote?.length || 0}`);
+        console.log(`[freestyle] SOAP note generated: ${resultNote?.length || 0} chars`);
       } else {
-        const errText = await soapResponse.text();
-        console.warn(`[freestyle-generate] SOAP function returned ${soapResponse.status}: ${errText.slice(0, 200)}`);
+        const errText = await soapResp.text();
+        console.warn(`[freestyle] generate-soap-note returned ${soapResp.status}: ${errText.slice(0, 300)}`);
       }
     } catch (e: any) {
-      console.warn(`[freestyle-generate] SOAP function call failed: ${e?.message}`);
+      console.warn(`[freestyle] generate-soap-note failed: ${e?.message}`);
     }
 
-    // Fallback: call OpenAI directly if SOAP function didn't work
+    // Fallback: direct OpenAI if SOAP function didn't work
     if (!resultNote && OPENAI_API_KEY) {
-      console.log(`[freestyle-generate] Falling back to direct OpenAI call`);
-      await supabase
-        .from("freestyle_jobs")
-        .update({ progress: 60, current_step: "Generating H&P with AI" })
-        .eq("id", jobId);
-
-      resultNote = await generateWithOpenAI(OPENAI_API_KEY, clinicalContext);
+      console.log(`[freestyle] Fallback to direct OpenAI`);
+      await updateJob({ progress: 70, current_step: "Generating note (fallback)" });
+      resultNote = await generateNoteDirectly(OPENAI_API_KEY, combinedTranscript);
     }
 
-    // Final fallback: basic structured note
     if (!resultNote) {
-      console.log(`[freestyle-generate] Using basic note generation`);
-      resultNote = `CLINICAL DOCUMENTATION\n\n${clinicalContext}\n\n---\nNote: AI generation unavailable. Raw clinical data shown above.`;
+      resultNote = `CLINICAL DOCUMENTATION\n\n${combinedTranscript}\n\n---\nNote: AI generation was not available. Raw clinical content shown above.`;
     }
 
-    // Step 3: Save result
-    await supabase
-      .from("freestyle_jobs")
-      .update({ status: "finalizing", progress: 90, current_step: "Saving results" })
-      .eq("id", jobId);
+    // ── Step 3: Complete ─────────────────────────────────────────────────
 
-    await supabase
-      .from("freestyle_jobs")
-      .update({
-        status: "complete",
-        progress: 100,
-        current_step: null,
-        result_note: resultNote,
-        completed_at: new Date().toISOString(),
-      })
-      .eq("id", jobId);
+    await updateJob({
+      status: "complete",
+      progress: 100,
+      current_step: null,
+      result_note: resultNote,
+      completed_at: new Date().toISOString(),
+    });
 
-    console.log(`[freestyle-generate] Job ${jobId} completed successfully`);
+    console.log(`[freestyle] Job ${jobId} complete`);
 
   } catch (err: any) {
-    console.error(`[freestyle-generate] Job ${jobId} failed:`, err);
-    await supabase
-      .from("freestyle_jobs")
-      .update({
-        status: "failed",
-        error: err.message || "Processing failed",
-        current_step: null,
-      })
-      .eq("id", jobId);
+    console.error(`[freestyle] Job ${jobId} failed:`, err);
+    await updateJob({
+      status: "failed",
+      error: err.message || "Processing failed",
+      current_step: null,
+    });
   }
 }
 
-// ── Direct OpenAI fallback ───────────────────────────────────────────────────
+// ── Whisper Transcription ────────────────────────────────────────────────────
 
-async function generateWithOpenAI(apiKey: string, clinicalContext: string): Promise<string> {
-  const systemPrompt = `You are a clinical documentation specialist. Generate a comprehensive History and Physical (H&P) note based on the provided clinical information.
+async function transcribeWithWhisper(apiKey: string, audioBlob: Blob, filename: string): Promise<string | null> {
+  const ext = filename.includes('.webm') ? 'webm' : 'm4a';
+  const formData = new FormData();
+  formData.append("file", audioBlob, `recording.${ext}`);
+  formData.append("model", "whisper-1");
+  formData.append("language", "en");
+  formData.append("response_format", "text");
 
-RULES:
-- Use standard H&P format with clear section headers
-- Include ALL relevant information from the input — do not omit any details
-- If information for a section is genuinely not available, skip that section entirely
-- Do NOT include sections with "[Not documented]" — only include sections with actual content
-- Be thorough but concise
-- Use proper medical terminology
+  const resp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${apiKey}` },
+    body: formData,
+  });
 
-Sections to include (only if data exists):
-CHIEF COMPLAINT, HISTORY OF PRESENT ILLNESS, PAST MEDICAL HISTORY, MEDICATIONS, ALLERGIES, SOCIAL HISTORY, FAMILY HISTORY, REVIEW OF SYSTEMS, PHYSICAL EXAMINATION, ASSESSMENT & PLAN`;
+  if (!resp.ok) {
+    const err = await resp.text();
+    console.warn(`[whisper] Error ${resp.status}: ${err.slice(0, 200)}`);
+    return null;
+  }
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+  const text = await resp.text();
+  return text.trim() || null;
+}
+
+// ── OpenAI Vision OCR ────────────────────────────────────────────────────────
+
+async function extractTextFromImage(apiKey: string, imageUrl: string): Promise<string | null> {
+  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "gpt-4o",
+      messages: [{
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "Extract ALL text from this medical document image. Include every detail: patient info, medications, vitals, diagnoses, labs, notes, instructions. Return the raw extracted text only, no commentary.",
+          },
+          { type: "image_url", image_url: { url: imageUrl, detail: "high" } },
+        ],
+      }],
+      max_tokens: 4000,
+      temperature: 0.1,
+    }),
+  });
+
+  if (!resp.ok) {
+    const err = await resp.text();
+    console.warn(`[vision] Error ${resp.status}: ${err.slice(0, 200)}`);
+    return null;
+  }
+
+  const data = await resp.json();
+  return data.choices?.[0]?.message?.content?.trim() || null;
+}
+
+// ── Direct OpenAI Note Generation (fallback) ─────────────────────────────────
+
+async function generateNoteDirectly(apiKey: string, transcript: string): Promise<string> {
+  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${apiKey}`,
@@ -286,19 +367,22 @@ CHIEF COMPLAINT, HISTORY OF PRESENT ILLNESS, PAST MEDICAL HISTORY, MEDICATIONS, 
     body: JSON.stringify({
       model: "gpt-4o",
       messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: `Generate an H&P note from the following clinical information. Only include sections that have actual data — never put "[Not documented]":\n\n${clinicalContext}` },
+        {
+          role: "system",
+          content: `You are a clinical documentation specialist. Generate an H&P note from the provided clinical data. Only include sections with actual data — never write "[Not documented]". Use standard medical format.`,
+        },
+        { role: "user", content: `Generate an H&P note:\n\n${transcript}` },
       ],
       temperature: 0.3,
       max_tokens: 4000,
     }),
   });
 
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`OpenAI error: ${response.status} - ${errText.slice(0, 200)}`);
+  if (!resp.ok) {
+    const err = await resp.text();
+    throw new Error(`OpenAI error ${resp.status}: ${err.slice(0, 200)}`);
   }
 
-  const data = await response.json();
+  const data = await resp.json();
   return data.choices?.[0]?.message?.content?.trim() || "Error: No content generated";
 }
