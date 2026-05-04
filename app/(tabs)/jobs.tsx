@@ -1,10 +1,12 @@
-import React, { useMemo, useEffect, useRef, useCallback } from 'react';
+import React, { useMemo, useEffect, useRef, useCallback, useState } from 'react';
 import {
-  View, Text, StyleSheet, FlatList, Platform, Pressable,
+  View, Text, StyleSheet, FlatList, Platform, Pressable, Modal, ScrollView, Share, Alert,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useFocusEffect } from 'expo-router';
+import * as Clipboard from 'expo-clipboard';
+import * as Haptics from 'expo-haptics';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import { useThemeColors } from '@/constants/colors';
 import { useEffectiveColorScheme } from '@/lib/settings-context';
@@ -44,12 +46,21 @@ function formatTime(timestamp: number): string {
   return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
-function JobCard({ job, colors }: { job: FreestyleJob; colors: ReturnType<typeof useThemeColors> }) {
+// ── Job Card ───────────────────────────────────────────────────────────────────
+
+function JobCard({
+  job, colors, onPress,
+}: {
+  job: FreestyleJob;
+  colors: ReturnType<typeof useThemeColors>;
+  onPress: () => void;
+}) {
   const status = getStatusConfig(job.status, colors);
   const isActive = !['complete', 'failed'].includes(job.status);
 
   return (
     <Pressable
+      onPress={onPress}
       style={({ pressed }) => [
         styles.jobCard,
         {
@@ -80,6 +91,12 @@ function JobCard({ job, colors }: { job: FreestyleJob; colors: ReturnType<typeof
           </Text>
         )}
 
+        {job.currentStep && isActive && (
+          <Text style={[styles.stepText, { color: colors.textSecondary }]} numberOfLines={1}>
+            {job.currentStep}
+          </Text>
+        )}
+
         {/* Progress bar for active jobs */}
         {isActive && (
           <View style={[styles.progressBg, { backgroundColor: colors.surfaceSecondary }]}>
@@ -90,6 +107,12 @@ function JobCard({ job, colors }: { job: FreestyleJob; colors: ReturnType<typeof
               ]}
             />
           </View>
+        )}
+
+        {job.status === 'complete' && (
+          <Text style={[styles.tapHint, { color: colors.textTertiary }]}>
+            Tap to view note
+          </Text>
         )}
 
         {job.error && (
@@ -104,6 +127,111 @@ function JobCard({ job, colors }: { job: FreestyleJob; colors: ReturnType<typeof
   );
 }
 
+// ── Note Viewer Modal ──────────────────────────────────────────────────────────
+
+function NoteViewerModal({
+  job, visible, onClose, colors,
+}: {
+  job: FreestyleJob | null;
+  visible: boolean;
+  onClose: () => void;
+  colors: ReturnType<typeof useThemeColors>;
+}) {
+  const insets = useSafeAreaInsets();
+
+  const handleCopy = async () => {
+    if (!job?.resultNote) return;
+    await Clipboard.setStringAsync(job.resultNote);
+    if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    Alert.alert('Copied', 'Note copied to clipboard');
+  };
+
+  const handleShare = async () => {
+    if (!job?.resultNote) return;
+    try {
+      await Share.share({
+        message: job.resultNote,
+        title: 'H&P Note',
+      });
+    } catch {}
+  };
+
+  if (!job) return null;
+  const status = getStatusConfig(job.status, colors);
+
+  return (
+    <Modal
+      visible={visible}
+      animationType="slide"
+      presentationStyle="pageSheet"
+      onRequestClose={onClose}
+    >
+      <View style={[styles.modalContainer, { backgroundColor: colors.background }]}>
+        {/* Header */}
+        <View style={[styles.modalHeader, { paddingTop: insets.top + 12, borderBottomColor: colors.border }]}>
+          <Pressable onPress={onClose} hitSlop={12} style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}>
+            <Ionicons name="close" size={24} color={colors.text} />
+          </Pressable>
+          <Text style={[styles.modalTitle, { color: colors.text }]}>
+            {job.status === 'complete' ? 'Generated Note' : job.status === 'failed' ? 'Job Failed' : 'Job Details'}
+          </Text>
+          <View style={styles.modalActions}>
+            {job.resultNote && (
+              <>
+                <Pressable onPress={handleCopy} hitSlop={8} style={({ pressed }) => [styles.modalActionBtn, { backgroundColor: colors.surfaceSecondary, opacity: pressed ? 0.7 : 1 }]}>
+                  <Ionicons name="copy-outline" size={18} color={colors.tint} />
+                </Pressable>
+                <Pressable onPress={handleShare} hitSlop={8} style={({ pressed }) => [styles.modalActionBtn, { backgroundColor: colors.surfaceSecondary, opacity: pressed ? 0.7 : 1 }]}>
+                  <Ionicons name="share-outline" size={18} color={colors.tint} />
+                </Pressable>
+              </>
+            )}
+          </View>
+        </View>
+
+        {/* Status chip */}
+        <View style={styles.modalStatusRow}>
+          <View style={[styles.statusChip, { backgroundColor: `${status.color}18` }]}>
+            <Ionicons name={status.icon} size={12} color={status.color} />
+            <Text style={[styles.statusChipText, { color: status.color }]}>{status.label}</Text>
+          </View>
+          {job.patientName && (
+            <Text style={[styles.modalPatient, { color: colors.textSecondary }]}>{job.patientName}</Text>
+          )}
+          <Text style={[styles.modalTime, { color: colors.textTertiary }]}>{formatTime(job.createdAt)}</Text>
+        </View>
+
+        {/* Content */}
+        <ScrollView
+          style={styles.modalScroll}
+          contentContainerStyle={[styles.modalScrollContent, { paddingBottom: insets.bottom + 40 }]}
+          showsVerticalScrollIndicator={false}
+        >
+          {job.resultNote ? (
+            <Text style={[styles.noteText, { color: colors.text }]} selectable>
+              {job.resultNote}
+            </Text>
+          ) : job.error ? (
+            <View style={[styles.errorCard, { backgroundColor: colors.recordingLight, borderColor: `${colors.recording}30` }]}>
+              <Ionicons name="alert-circle" size={24} color={colors.recording} />
+              <Text style={[styles.errorCardText, { color: colors.recording }]}>{job.error}</Text>
+            </View>
+          ) : (
+            <View style={styles.emptyNoteState}>
+              <Ionicons name="document-text-outline" size={48} color={colors.textTertiary} />
+              <Text style={[styles.emptyNoteText, { color: colors.textTertiary }]}>
+                {job.status === 'complete' ? 'No note content available' : 'Job is still processing...'}
+              </Text>
+            </View>
+          )}
+        </ScrollView>
+      </View>
+    </Modal>
+  );
+}
+
+// ── Main Screen ────────────────────────────────────────────────────────────────
+
 export default function JobsDashboard() {
   const colorScheme = useEffectiveColorScheme();
   const colors = useThemeColors(colorScheme);
@@ -113,6 +241,7 @@ export default function JobsDashboard() {
   const jobs = useMemo(() => selectRecentJobs(jobsMap), [jobsMap]);
   const activeJobs = useMemo(() => selectActiveJobs(jobsMap), [jobsMap]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [selectedJob, setSelectedJob] = useState<FreestyleJob | null>(null);
 
   // Poll active jobs from Supabase every 3s while screen is focused
   const pollActiveJobs = useCallback(async () => {
@@ -133,7 +262,6 @@ export default function JobsDashboard() {
           });
         }
       } catch (e: any) {
-        // Silently ignore poll errors — non-critical
         console.warn(`Poll error for job ${job.id}:`, e?.message);
       }
     }
@@ -141,9 +269,7 @@ export default function JobsDashboard() {
 
   useFocusEffect(
     useCallback(() => {
-      // Poll immediately on focus
       pollActiveJobs();
-      // Then every 3s
       pollRef.current = setInterval(pollActiveJobs, 3000);
       return () => {
         if (pollRef.current) clearInterval(pollRef.current);
@@ -151,11 +277,18 @@ export default function JobsDashboard() {
     }, [pollActiveJobs]),
   );
 
+  const handleJobPress = useCallback((job: FreestyleJob) => {
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    // For completed/failed jobs, show the detail modal
+    // For active jobs, also show modal (to see current step)
+    setSelectedJob(job);
+  }, []);
+
   const webTopInset = Platform.OS === 'web' ? 67 : 0;
 
   const renderJob = ({ item, index }: { item: FreestyleJob; index: number }) => (
     <Animated.View entering={FadeInDown.duration(300).delay(index * 50)}>
-      <JobCard job={item} colors={colors} />
+      <JobCard job={item} colors={colors} onPress={() => handleJobPress(item)} />
     </Animated.View>
   );
 
@@ -207,6 +340,14 @@ export default function JobsDashboard() {
             </Text>
           </Animated.View>
         }
+      />
+
+      {/* Note viewer modal */}
+      <NoteViewerModal
+        job={selectedJob}
+        visible={!!selectedJob}
+        onClose={() => setSelectedJob(null)}
+        colors={colors}
       />
     </View>
   );
@@ -291,6 +432,15 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontFamily: 'Inter_600SemiBold',
   },
+  stepText: {
+    fontSize: 12,
+    fontFamily: 'Inter_400Regular',
+  },
+  tapHint: {
+    fontSize: 11,
+    fontFamily: 'Inter_400Regular',
+    fontStyle: 'italic',
+  },
   progressBg: {
     height: 4,
     borderRadius: 2,
@@ -329,5 +479,85 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_400Regular',
     textAlign: 'center',
     lineHeight: 20,
+  },
+  // Modal
+  modalContainer: {
+    flex: 1,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+    gap: 14,
+  },
+  modalTitle: {
+    flex: 1,
+    fontSize: 18,
+    fontFamily: 'Inter_600SemiBold',
+  },
+  modalActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  modalActionBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+  },
+  modalPatient: {
+    fontSize: 14,
+    fontFamily: 'Inter_500Medium',
+  },
+  modalTime: {
+    fontSize: 12,
+    fontFamily: 'Inter_400Regular',
+    marginLeft: 'auto',
+  },
+  modalScroll: {
+    flex: 1,
+  },
+  modalScrollContent: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+  },
+  noteText: {
+    fontSize: 15,
+    fontFamily: 'Inter_400Regular',
+    lineHeight: 24,
+  },
+  errorCard: {
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 20,
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 20,
+  },
+  errorCardText: {
+    fontSize: 14,
+    fontFamily: 'Inter_500Medium',
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  emptyNoteState: {
+    alignItems: 'center',
+    paddingTop: 60,
+    gap: 16,
+  },
+  emptyNoteText: {
+    fontSize: 15,
+    fontFamily: 'Inter_400Regular',
+    textAlign: 'center',
   },
 });
