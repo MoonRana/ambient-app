@@ -343,7 +343,7 @@ export default function HomeHub() {
     </Animated.View>
   );
 
-  const ListHeader = () => (
+  const listHeader = useMemo(() => (
     <View style={styles.listHeaderContainer}>
       {/* ── Hero Action Zone ── */}
       <Animated.View entering={FadeIn.duration(600).delay(100)} style={styles.actionZone}>
@@ -459,9 +459,9 @@ export default function HomeHub() {
         </Animated.View>
       )}
     </View>
-  );
+  ), [greeting, userName, colors, glowStyle, pulseStyle, handleStartSession, handleCaptureOnly, handleFreestyle, activeJobs, sessions]);
 
-  const ListFooter = () => (
+  const listFooter = useMemo(() => (
     <Animated.View entering={FadeInUp.duration(400).delay(400)} style={styles.footerSection}>
       {sessions.length > 10 && (
         <Pressable
@@ -483,7 +483,7 @@ export default function HomeHub() {
         </Text>
       </View>
     </Animated.View>
-  );
+  ), [sessions.length, colors]);
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -491,8 +491,8 @@ export default function HomeHub() {
         data={recentSessions}
         keyExtractor={item => item.id}
         renderItem={renderInboxItem}
-        ListHeaderComponent={ListHeader}
-        ListFooterComponent={ListFooter}
+        ListHeaderComponent={<>{listHeader}</>}
+        ListFooterComponent={<>{listFooter}</>}
         contentContainerStyle={[
           styles.listContent,
           {

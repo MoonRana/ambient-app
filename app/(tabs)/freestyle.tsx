@@ -263,8 +263,7 @@ export default function FreestyleScreen() {
       </ScrollView>
 
       {/* ── Sticky Generate Button ── */}
-      <Animated.View
-        entering={FadeInUp.duration(400).delay(200)}
+      <View
         style={[
           styles.generateBar,
           {
@@ -272,40 +271,40 @@ export default function FreestyleScreen() {
             backgroundColor: colors.background,
           },
         ]}
+        pointerEvents="box-none"
       >
-        <Animated.View style={sparkleStyle}>
-          <Pressable
-            onPress={handleGenerate}
-            disabled={!hasAnyInput || isUploading}
-            style={({ pressed }) => [
-              styles.generateBtn,
-              {
-                backgroundColor: hasAnyInput && !isUploading ? colors.tint : colors.surfaceSecondary,
-                shadowColor: hasAnyInput && !isUploading ? colors.tint : 'transparent',
-                opacity: !hasAnyInput || isUploading ? 0.6 : pressed ? 0.9 : 1,
-              },
+        <Pressable
+          onPress={handleGenerate}
+          disabled={!hasAnyInput || isUploading}
+          style={({ pressed }) => [
+            styles.generateBtn,
+            {
+              backgroundColor: hasAnyInput && !isUploading ? colors.tint : colors.surfaceSecondary,
+              shadowColor: hasAnyInput && !isUploading ? colors.tint : 'transparent',
+              opacity: !hasAnyInput || isUploading ? 0.6 : pressed ? 0.9 : 1,
+              transform: [{ scale: pressed ? 0.97 : 1 }],
+            },
+          ]}
+        >
+          {isUploading ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <Ionicons
+              name="sparkles"
+              size={22}
+              color={hasAnyInput ? '#fff' : colors.textTertiary}
+            />
+          )}
+          <Text
+            style={[
+              styles.generateBtnText,
+              { color: hasAnyInput && !isUploading ? '#fff' : colors.textTertiary },
             ]}
           >
-            {isUploading ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <Ionicons
-                name="sparkles"
-                size={22}
-                color={hasAnyInput ? '#fff' : colors.textTertiary}
-              />
-            )}
-            <Text
-              style={[
-                styles.generateBtnText,
-                { color: hasAnyInput && !isUploading ? '#fff' : colors.textTertiary },
-              ]}
-            >
-              {isUploading ? `Uploading ${Math.round(uploadProgress)}%` : 'Generate H&P'}
-            </Text>
-          </Pressable>
-        </Animated.View>
-      </Animated.View>
+            {isUploading ? `Uploading ${Math.round(uploadProgress)}%` : 'Generate H&P'}
+          </Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -408,6 +407,7 @@ const styles = StyleSheet.create({
     right: 0,
     paddingHorizontal: 20,
     paddingTop: 12,
+    zIndex: 10,
   },
   generateBtn: {
     flexDirection: 'row',
