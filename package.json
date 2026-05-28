@@ -1,5 +1,5 @@
 {
-  "name": "expo-app",
+  "name": "domynote-ambient",
   "main": "expo-router/entry",
   "version": "1.0.0",
   "scripts": {
@@ -13,7 +13,11 @@
     "db:push": "drizzle-kit push",
     "start": "npx expo start",
     "lint": "npx expo lint",
-    "lint:fix": "npx expo lint --fix"
+    "lint:fix": "npx expo lint --fix",
+    "screenshots:capture": "bash scripts/capture-app-store-screenshot.sh",
+    "screenshots:resize": "bash scripts/resize-app-store-screenshots.sh",
+    "screenshots:run": "bash scripts/run-app-store-screenshots.sh",
+    "screenshots:organize": "bash scripts/organize-store-screenshots.sh"
   },
   "dependencies": {
     "@expo-google-fonts/inter": "^0.4.2",

@@ -1,6 +1,6 @@
 import React from 'react';
 import {
-  View, Text, StyleSheet, Switch, Pressable, useColorScheme, Platform, ScrollView, Alert,
+  View, Text, StyleSheet, Switch, Pressable, useColorScheme, Platform, ScrollView, Alert, Linking,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -10,6 +10,7 @@ import { useThemeColors } from '@/constants/colors';
 import { useSettings, useEffectiveColorScheme } from '@/lib/settings-context';
 import { useSessions } from '@/lib/session-context';
 import { useAuth } from '@/lib/auth-context';
+import { BrandMark } from '@/components/BrandLogo';
 
 function SettingRow({
   icon,
@@ -75,13 +76,51 @@ export default function SettingsTab() {
   const insets = useSafeAreaInsets();
   const settings = useSettings();
   const { sessions } = useSessions();
-  const { user, signOut } = useAuth();
+  const { user, signOut, deleteAccount } = useAuth();
 
   const handleSignOut = () => {
     Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Sign Out', style: 'destructive', onPress: signOut },
     ]);
+  };
+
+  const [isDeleting, setIsDeleting] = React.useState(false);
+
+  const handleDeleteAccount = () => {
+    Alert.alert(
+      'Delete Account',
+      'This will permanently delete your account and all associated data. This action cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete Account',
+          style: 'destructive',
+          onPress: () => {
+            Alert.alert(
+              'Are you sure?',
+              'This is your final confirmation. Your account and all data will be permanently deleted.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Delete Permanently',
+                  style: 'destructive',
+                  onPress: async () => {
+                    setIsDeleting(true);
+                    try {
+                      await deleteAccount();
+                    } catch (e: any) {
+                      setIsDeleting(false);
+                      Alert.alert('Error', e.message || 'Failed to delete account. Please try again.');
+                    }
+                  },
+                },
+              ],
+            );
+          },
+        },
+      ],
+    );
   };
 
   const themeOptions: Array<{ label: string; value: 'system' | 'light' | 'dark'; icon: keyof typeof Ionicons.glyphMap }> = [
@@ -248,6 +287,21 @@ export default function SettingsTab() {
           </View>
         </View>
 
+        {/* Account */}
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>Account</Text>
+          <View style={[styles.sectionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <SettingRow
+              icon="person-remove"
+              iconColor={colors.recording}
+              title={isDeleting ? 'Deleting Account…' : 'Delete Account'}
+              subtitle="Permanently delete your account and all data"
+              onPress={isDeleting ? undefined : handleDeleteAccount}
+              colors={colors}
+            />
+          </View>
+        </View>
+
         <View style={styles.section}>
           <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>About</Text>
           <View style={[styles.sectionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
@@ -256,6 +310,30 @@ export default function SettingsTab() {
               iconColor={colors.accent}
               title="HIPAA Compliance"
               subtitle="All data is stored locally and encrypted"
+              colors={colors}
+            />
+            <SettingRow
+              icon="document-text"
+              iconColor={colors.tint}
+              title="Privacy Policy"
+              subtitle="How we protect your data"
+              onPress={() => Linking.openURL('https://domynote.com/privacy')}
+              colors={colors}
+            />
+            <SettingRow
+              icon="reader"
+              iconColor={colors.tint}
+              title="Terms of Service"
+              subtitle="Usage terms and conditions"
+              onPress={() => Linking.openURL('https://domynote.com/terms')}
+              colors={colors}
+            />
+            <SettingRow
+              icon="mail"
+              iconColor={colors.accent}
+              title="Contact Support"
+              subtitle="ranamansoorv7@gmail.com"
+              onPress={() => Linking.openURL('mailto:ranamansoorv7@gmail.com?subject=DoMyNote%20Support')}
               colors={colors}
             />
             <SettingRow
@@ -270,13 +348,14 @@ export default function SettingsTab() {
 
         {/* App Footer */}
         <View style={styles.footerBranding}>
-          <View style={[styles.footerLogo, { backgroundColor: colors.tintLight }]}>
-            <Ionicons name="medical" size={18} color={colors.tint} />
-          </View>
-          <Text style={[styles.footerAppName, { color: colors.textSecondary }]}>DoMyNote</Text>
+          <BrandMark size={36} tintColor={colors.tint} />
+          <Text style={[styles.footerAppName, { color: colors.textSecondary }]}>DoMy<Text style={{ color: colors.tint }}>Note</Text></Text>
           <Text style={[styles.footerVersion, { color: colors.textTertiary }]}>Version 1.0.0</Text>
           <Text style={[styles.footerCopy, { color: colors.textTertiary }]}>
             Made with ❤️ for clinicians
+          </Text>
+          <Text style={[styles.footerCopy, { color: colors.textTertiary, marginTop: 4 }]}>
+            © 2026 DoMyNote. All rights reserved.
           </Text>
         </View>
       </ScrollView>

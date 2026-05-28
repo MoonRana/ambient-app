@@ -44,3 +44,11 @@ yarn-error.*
 .config/
 
 .local/
+
+# App Store raw simulator captures (resized outputs in ios-6.7/ are kept)
+store-screenshots/raw/
+
+# Replit development files (not part of app)
+.replit
+replit.md
+replit_agent/

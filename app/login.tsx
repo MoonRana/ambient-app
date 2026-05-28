@@ -10,6 +10,7 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { useThemeColors } from '@/constants/colors';
 import { useAuth } from '@/lib/auth-context';
 import { useEffectiveColorScheme } from '@/lib/settings-context';
+import BrandLogo from '@/components/BrandLogo';
 
 export default function LoginScreen() {
     const colorScheme = useEffectiveColorScheme();
@@ -64,13 +65,12 @@ export default function LoginScreen() {
                 showsVerticalScrollIndicator={false}
             >
                 <Animated.View entering={FadeInDown.duration(500).delay(100)} style={styles.header}>
-                    <View style={[styles.logoCircle, { backgroundColor: colors.tint }]}>
-                        <Ionicons name="medical" size={32} color="#fff" />
-                    </View>
-                    <Text style={[styles.appName, { color: colors.text }]}>DoMyNote</Text>
-                    <Text style={[styles.tagline, { color: colors.textSecondary }]}>
-                        AI-powered clinical documentation{"\n"}for busy clinicians
-                    </Text>
+                    <BrandLogo
+                        size="large"
+                        showTagline
+                        color={colors.text}
+                        tintColor={colors.tint}
+                    />
                 </Animated.View>
 
                 <Animated.View entering={FadeInDown.duration(500).delay(200)} style={styles.form}>

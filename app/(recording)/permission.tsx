@@ -163,7 +163,7 @@ export default function PermissionScreen() {
             ]}
           >
             <Ionicons name="mic" size={20} color="#fff" />
-            <Text style={styles.primaryButtonText}>Allow Microphone</Text>
+            <Text style={styles.primaryButtonText}>Continue</Text>
           </Pressable>
         )}
       </Animated.View>

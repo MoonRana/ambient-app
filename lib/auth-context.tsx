@@ -1,6 +1,9 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { Alert } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './supabase';
 import { Session, User } from '@supabase/supabase-js';
+import { SCREENSHOT_DEMO, SCREENSHOT_DEMO_SESSION } from './screenshot-demo';
 
 interface AuthContextValue {
     session: Session | null;
@@ -9,6 +12,7 @@ interface AuthContextValue {
     signIn: (email: string, password: string) => Promise<void>;
     signUp: (email: string, password: string, name?: string) => Promise<void>;
     signOut: () => Promise<void>;
+    deleteAccount: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -18,6 +22,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const [isLoading, setIsLoading] = useState(true);
 
     useEffect(() => {
+        if (SCREENSHOT_DEMO) {
+            setSession(SCREENSHOT_DEMO_SESSION);
+            setIsLoading(false);
+            return;
+        }
+
         supabase.auth.getSession().then(({ data: { session }, error }) => {
             if (error) {
                 // Stale / invalid refresh token — clear the session and force re-login
@@ -56,6 +66,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (error) throw error;
     };
 
+    const deleteAccount = async () => {
+        const accessToken = session?.access_token;
+        if (!accessToken) throw new Error('No active session');
+
+        const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+        const response = await fetch(
+            `${supabaseUrl}/functions/v1/delete-account`,
+            {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${accessToken}`,
+                    'Content-Type': 'application/json',
+                },
+            },
+        );
+
+        if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.error || 'Failed to delete account');
+        }
+
+        // Clear all local data
+        await AsyncStorage.clear();
+        // Sign out locally
+        await supabase.auth.signOut();
+    };
+
     return (
         <AuthContext.Provider value={{
             session,
@@ -64,6 +101,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             signIn,
             signUp,
             signOut,
+            deleteAccount,
         }}>
             {children}
         </AuthContext.Provider>

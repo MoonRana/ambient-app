@@ -5,7 +5,7 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "myapp",
+    "scheme": "domynote",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
@@ -48,7 +48,7 @@
       [
         "expo-router",
         {
-          "origin": "https://replit.com/"
+          "origin": "https://domynote.com/"
         }
       ],
       "expo-font",
@@ -73,7 +73,7 @@
     },
     "extra": {
       "router": {
-        "origin": "https://replit.com/"
+        "origin": "https://domynote.com/"
       },
       "eas": {
         "projectId": "61103b32-59ec-4c5d-841d-1cd528f8c606"

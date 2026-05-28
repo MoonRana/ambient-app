@@ -1,6 +1,10 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useRef, useCallback, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './supabase';
+import {
+  SCREENSHOT_DEMO,
+  SCREENSHOT_DEMO_AMBIENT_SESSIONS,
+} from './screenshot-demo';
 
 export interface CapturedImage {
   uri: string;
@@ -162,6 +166,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const loadSessions = async () => {
     try {
+      if (SCREENSHOT_DEMO) {
+        setSessions(SCREENSHOT_DEMO_AMBIENT_SESSIONS);
+        const reviewing = SCREENSHOT_DEMO_AMBIENT_SESSIONS.find((s) => s.status === 'reviewing');
+        setCurrentSession(reviewing ?? SCREENSHOT_DEMO_AMBIENT_SESSIONS[0]);
+        return;
+      }
       const stored = await AsyncStorage.getItem(STORAGE_KEY);
       if (stored) {
         setSessions(JSON.parse(stored));

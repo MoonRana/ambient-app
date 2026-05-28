@@ -15,6 +15,7 @@ import { useSessions, AmbientSession } from '@/lib/session-context';
 import { useEffectiveColorScheme } from '@/lib/settings-context';
 import { useJobsStore, selectActiveJobs, type FreestyleJob, type JobStatus } from '@/lib/stores/useJobsStore';
 import { useAuth } from '@/lib/auth-context';
+import { BrandMark } from '@/components/BrandLogo';
 
 function getGreeting(): string {
   const hour = new Date().getHours();
@@ -350,9 +351,12 @@ export default function HomeHub() {
         <Text style={[styles.greeting, { color: colors.textSecondary }]}>
           {greeting}{userName ? `, ${userName}` : ''}
         </Text>
-        <Text style={[styles.brandName, { color: colors.text }]}>
-          DoMyNote
-        </Text>
+        <View style={styles.brandRow}>
+          <BrandMark size={30} tintColor={colors.tint} />
+          <Text style={[styles.brandName, { color: colors.text }]}>
+            DoMy<Text style={{ color: colors.tint }}>Note</Text>
+          </Text>
+        </View>
 
         {/* Big mic button with glow */}
         <View style={styles.micWrapper}>
@@ -441,12 +445,12 @@ export default function HomeHub() {
           <View style={[styles.welcomeCardInner, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <Text style={[styles.welcomeTitle, { color: colors.text }]}>Welcome to DoMyNote 👋</Text>
             <Text style={[styles.welcomeText, { color: colors.textSecondary }]}>
-              Your AI clinical documentation assistant. Here's how to get started:
+              Your AI-powered clinical scribe. Three ways to generate notes:
             </Text>
             {[
-              { step: '1', icon: 'mic-outline' as const, text: 'Record a patient encounter' },
-              { step: '2', icon: 'sparkles-outline' as const, text: 'AI generates your SOAP note' },
-              { step: '3', icon: 'checkmark-circle-outline' as const, text: 'Review, edit, and export' },
+              { step: '1', icon: 'mic-outline' as const, text: 'Ambient Record — capture encounters hands-free' },
+              { step: '2', icon: 'sparkles-outline' as const, text: 'Freestyle H&P — mix audio, docs & typed notes' },
+              { step: '3', icon: 'medical-outline' as const, text: 'STAT Consult — evidence-based clinical Q&A' },
             ].map((item, i) => (
               <View key={i} style={styles.welcomeStep}>
                 <View style={[styles.welcomeStepNum, { backgroundColor: colors.tintLight }]}>
@@ -534,6 +538,11 @@ const styles = StyleSheet.create({
     fontSize: 26,
     fontFamily: 'Inter_700Bold',
     marginBottom: 2,
+  },
+  brandRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
   },
   micWrapper: {
     alignItems: 'center',
