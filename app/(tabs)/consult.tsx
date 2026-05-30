@@ -169,10 +169,11 @@ function SourcesAccordion({
 // ─── Message bubble ───────────────────────────────────────────────────────────
 
 function MessageBubble({
-    message, colors,
+    message, colors, onRetry,
 }: {
     message: ConsultMessage;
     colors: ReturnType<typeof useThemeColors>;
+    onRetry?: () => void;
 }) {
     const isUser = message.role === 'user';
     const isEmpty = !message.content && message.streaming;
@@ -248,9 +249,29 @@ function MessageBubble({
                 <View style={[styles.assistantBubble, { backgroundColor: colors.surface, borderColor: colors.border }]}>
                     {/* Error state */}
                     {message.error && (
-                        <View style={styles.errorRow}>
-                            <Ionicons name="alert-circle-outline" size={16} color={colors.recording} />
-                            <Text style={[styles.errorText, { color: colors.recording }]}>{message.error}</Text>
+                        <View style={styles.errorContainer}>
+                            <View style={styles.errorRow}>
+                                <Ionicons name="alert-circle-outline" size={16} color={colors.recording} />
+                                <Text style={[styles.errorText, { color: colors.recording }]}>
+                                    {message.error.includes('apikey') || message.error.includes('401')
+                                        ? 'Database access denied. Please verify system setup or try again.'
+                                        : message.error.includes('clinical-qa') || message.error.includes('502') || message.error.includes('404')
+                                        ? 'The Consult service is currently unavailable. Please verify Edge Function deployment.'
+                                        : message.error}
+                                </Text>
+                            </View>
+                            {onRetry && (
+                                <Pressable
+                                    onPress={onRetry}
+                                    style={({ pressed }) => [
+                                        styles.retryBtn,
+                                        { borderColor: colors.border, opacity: pressed ? 0.7 : 1 }
+                                    ]}
+                                >
+                                    <Ionicons name="refresh" size={12} color={colors.tint} />
+                                    <Text style={[styles.retryBtnText, { color: colors.tint }]}>Retry</Text>
+                                </Pressable>
+                            )}
                         </View>
                     )}
 
@@ -542,7 +563,20 @@ function ConsultScreen() {
                     ref={listRef}
                     data={messages}
                     keyExtractor={m => m.id}
-                    renderItem={({ item }) => <MessageBubble message={item} colors={colors} />}
+                    renderItem={({ item, index }) => (
+                        <MessageBubble
+                            message={item}
+                            colors={colors}
+                            onRetry={() => {
+                                if (index > 0) {
+                                    const prev = messages[index - 1];
+                                    if (prev && prev.role === 'user') {
+                                        sendQuestion(prev.content);
+                                    }
+                                }
+                            }}
+                        />
+                    )}
                     contentContainerStyle={[
                         styles.messageList,
                         { paddingBottom: 12 },
@@ -755,6 +789,14 @@ const styles = StyleSheet.create({
     },
     errorRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
     errorText: { fontSize: 14, fontFamily: 'Inter_400Regular', flex: 1 },
+    errorContainer: { gap: 8, marginTop: 4 },
+    retryBtn: {
+        flexDirection: 'row', alignItems: 'center', gap: 4,
+        paddingHorizontal: 12, paddingVertical: 6,
+        borderRadius: 20, borderWidth: 1, alignSelf: 'flex-start',
+        marginTop: 4,
+    },
+    retryBtnText: { fontSize: 12, fontFamily: 'Inter_500Medium' },
     metricsText: { fontSize: 11, fontFamily: 'Inter_400Regular', textAlign: 'right', marginTop: 4 },
 
     // Typing dots

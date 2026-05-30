@@ -11,6 +11,7 @@ import {
     ConsultMetrics,
 } from './supabase-api';
 import { Alert } from 'react-native';
+import { hasAIConsent, requestAIConsent } from './ai-consent';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -68,10 +69,16 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
     const historyRef = useRef<Array<{ role: 'user' | 'assistant'; content: string }>>([]);
 
     useEffect(() => {
-        fetchSpecialties().then(data => {
-            setSpecialties(data);
-            setSpecialtiesLoading(false);
-        });
+        fetchSpecialties()
+            .then(data => {
+                setSpecialties(data || []);
+                setSpecialtiesLoading(false);
+            })
+            .catch(err => {
+                console.warn('[fetchSpecialties] Failed:', err);
+                setSpecialties([]);
+                setSpecialtiesLoading(false);
+            });
         return () => {
             abortRef.current?.abort();
         };
@@ -110,9 +117,27 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
         setAttachedDocument(null);
     }, []);
 
-    const sendQuestion = useCallback((text: string) => {
+    const sendQuestion = useCallback(async (text: string) => {
         if (isStreaming || !text.trim()) return;
 
+        // Check for HIPAA-compliant AI consent
+        const consented = await hasAIConsent();
+        if (!consented) {
+            requestAIConsent({
+                onAgree: () => {
+                    proceedWithQuestion(text);
+                },
+                onDisagree: () => {
+                    setIsStreaming(false);
+                }
+            });
+            return;
+        }
+
+        await proceedWithQuestion(text);
+    }, [isStreaming, selectedSpecialty, attachedDocument]);
+
+    const proceedWithQuestion = async (text: string) => {
         const userMsg: ConsultMessage = { id: uid(), role: 'user', content: text.trim() };
 
         // Build enriched question if document is attached
@@ -192,7 +217,7 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
 
         // Clear the document after sending
         setAttachedDocument(null);
-    }, [isStreaming, selectedSpecialty, attachedDocument]);
+    };
 
     const value = useMemo<ConsultContextValue>(() => ({
         messages,

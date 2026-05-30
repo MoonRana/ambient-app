@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
 import {
-  View, Text, StyleSheet, Pressable, Platform, Linking,
+  View, Text, StyleSheet, Pressable, Platform, Linking, ScrollView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -94,54 +94,63 @@ export default function PermissionScreen() {
         </Pressable>
       </View>
 
-      <View style={styles.content}>
-        <Animated.View entering={FadeInDown.duration(600).delay(100)} style={styles.micSection}>
-          <Animated.View
-            style={[
-              styles.micOuter,
-              { backgroundColor: `${colors.tint}15` },
-              pulseStyle,
-            ]}
-          >
-            <View style={[styles.micInner, { backgroundColor: `${colors.tint}25` }]}>
-              <Ionicons name="mic" size={48} color={colors.tint} />
-            </View>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingBottom: Platform.OS === 'web' ? 40 : Math.max(insets.bottom, 16) + 100 }
+        ]}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.content}>
+          <Animated.View entering={FadeInDown.duration(600).delay(100)} style={styles.micSection}>
+            <Animated.View
+              style={[
+                styles.micOuter,
+                { backgroundColor: `${colors.tint}15` },
+                pulseStyle,
+              ]}
+            >
+              <View style={[styles.micInner, { backgroundColor: `${colors.tint}25` }]}>
+                <Ionicons name="mic" size={48} color={colors.tint} />
+              </View>
+            </Animated.View>
           </Animated.View>
-        </Animated.View>
 
-        <Animated.View entering={FadeInDown.duration(600).delay(200)} style={styles.textSection}>
-          <Text style={[styles.title, { color: colors.text }]}>
-            Microphone Access
-          </Text>
-          <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
-            DoMyNote needs access to your microphone to record patient encounters for clinical documentation.
-          </Text>
-        </Animated.View>
+          <Animated.View entering={FadeInDown.duration(600).delay(200)} style={styles.textSection}>
+            <Text style={[styles.title, { color: colors.text }]}>
+              Microphone Access
+            </Text>
+            <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+              DoMyNote needs access to your microphone to record patient encounters for clinical documentation.
+            </Text>
+          </Animated.View>
 
-        <Animated.View entering={FadeInDown.duration(600).delay(300)} style={styles.infoCards}>
-          <InfoCard
-            icon="shield-checkmark-outline"
-            title="Secure Recording"
-            description="Audio is processed locally and never shared without your consent"
-            variant="accent"
-          />
-          <InfoCard
-            icon="lock-closed-outline"
-            title="HIPAA Compliant"
-            description="All recordings follow healthcare privacy standards"
-          />
-          <InfoCard
-            icon="trash-outline"
-            title="You're in Control"
-            description="Delete recordings at any time from your session history"
-            variant="warning"
-          />
-        </Animated.View>
-      </View>
+          <Animated.View entering={FadeInDown.duration(600).delay(300)} style={styles.infoCards}>
+            <InfoCard
+              icon="shield-checkmark-outline"
+              title="Secure Recording"
+              description="Audio is processed locally and never shared without your consent"
+              variant="accent"
+            />
+            <InfoCard
+              icon="lock-closed-outline"
+              title="HIPAA Compliant"
+              description="All recordings follow healthcare privacy standards"
+            />
+            <InfoCard
+              icon="trash-outline"
+              title="You're in Control"
+              description="Delete recordings at any time from your session history"
+              variant="warning"
+            />
+          </Animated.View>
+        </View>
+      </ScrollView>
 
       <Animated.View
         entering={FadeInUp.duration(600).delay(400)}
-        style={[styles.footer, { paddingBottom: Platform.OS === 'web' ? 34 : Math.max(insets.bottom, 16) + 8 }]}
+        style={[styles.footer, { paddingBottom: Platform.OS === 'web' ? 34 : Math.max(insets.bottom, 16) + 8, backgroundColor: colors.background }]}
       >
         {permissionDeniedPermanently && Platform.OS !== 'web' ? (
           <Pressable
@@ -180,6 +189,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     paddingHorizontal: 20,
     paddingBottom: 8,
+    zIndex: 10,
   },
   closeBtn: {
     width: 36,
@@ -188,11 +198,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  content: {
+  scrollView: {
     flex: 1,
-    paddingHorizontal: 24,
+  },
+  scrollContent: {
+    flexGrow: 1,
     justifyContent: 'center',
-    gap: 32,
+    alignItems: 'center',
+  },
+  content: {
+    width: '100%',
+    maxWidth: 500,
+    paddingHorizontal: 24,
+    gap: 24,
+    alignSelf: 'center',
   },
   micSection: {
     alignItems: 'center',
@@ -231,8 +250,14 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   footer: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
     paddingHorizontal: 24,
     paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'transparent',
   },
   primaryButton: {
     flexDirection: 'row',
