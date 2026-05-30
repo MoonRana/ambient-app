@@ -11,6 +11,7 @@ import { queryClient } from "@/lib/query-client";
 import { SessionProvider } from "@/lib/session-context";
 import { SettingsProvider } from "@/lib/settings-context";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
+import { AIConsentProvider } from "@/components/AIConsentProvider";
 import { SCREENSHOT_DEMO, SCREENSHOT_DEMO_JOBS } from "@/lib/screenshot-demo";
 import { useJobsStore } from "@/lib/stores/useJobsStore";
 
@@ -109,11 +110,13 @@ export default function RootLayout() {
         <GestureHandlerRootView>
           <KeyboardProvider>
             <AuthProvider>
+              <AIConsentProvider>
               <SettingsProvider>
                 <SessionProvider>
                   <RootLayoutNav />
                 </SessionProvider>
               </SettingsProvider>
+              </AIConsentProvider>
             </AuthProvider>
           </KeyboardProvider>
         </GestureHandlerRootView>

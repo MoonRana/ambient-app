@@ -1,11 +1,25 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Alert, Linking } from 'react-native';
+import { Linking } from 'react-native';
 
 const AI_CONSENT_KEY = '@domynote_ai_consent';
+const PRIVACY_URL = 'https://domynote.com/privacy';
 
-/**
- * Check if the user has already consented to third-party AI data sharing.
- */
+type ConsentResolver = {
+  resolve: (granted: boolean) => void;
+};
+
+let pendingResolver: ConsentResolver | null = null;
+let showModalCallback: ((pending: ConsentResolver) => void) | null = null;
+
+/** Register the global modal handler (called from root layout). */
+export function registerAIConsentModal(show: (pending: ConsentResolver) => void) {
+  showModalCallback = show;
+}
+
+export function unregisterAIConsentModal() {
+  showModalCallback = null;
+}
+
 export async function hasAIConsent(): Promise<boolean> {
   try {
     const value = await AsyncStorage.getItem(AI_CONSENT_KEY);
@@ -15,9 +29,6 @@ export async function hasAIConsent(): Promise<boolean> {
   }
 }
 
-/**
- * Persist the user's AI consent decision.
- */
 export async function setAIConsent(granted: boolean): Promise<void> {
   try {
     await AsyncStorage.setItem(AI_CONSENT_KEY, granted ? 'granted' : 'denied');
@@ -26,44 +37,53 @@ export async function setAIConsent(granted: boolean): Promise<void> {
   }
 }
 
+export function openPrivacyPolicy() {
+  Linking.openURL(PRIVACY_URL).catch(() => {});
+}
+
 /**
- * Request explicit user consent for sharing medical data with HIPAA-compliant third-party AI systems.
- * Uses a clean Native Alert dialog matching standard App Store guidelines.
+ * Show the in-app AI consent modal and wait for the user's decision.
+ * Required by App Store Guideline 5.1.1 before sending data to third-party AI.
  */
-export function requestAIConsent(options: {
-  onAgree: () => void;
+export function requestAIConsent(options?: {
+  onAgree?: () => void;
   onDisagree?: () => void;
-}) {
-  Alert.alert(
-    'AI Data Sharing Consent',
-    'To generate clinical documentation and answer clinical questions, DoMyNote securely processes clinical audio, text, and images using advanced medical AI models. All data is processed in strict compliance with HIPAA privacy standards.\n\nBy continuing, you agree to securely process this encounter\'s data using our HIPAA-compliant AI partners (including AWS HealthScribe and OpenAI). No patient-identifiable data is shared.',
-    [
-      {
-        text: 'View Privacy Policy',
-        onPress: () => {
-          Linking.openURL('https://domynote.ai/privacy').catch(() => {});
-          // Re-trigger after viewing privacy policy so they can still consent
-          setTimeout(() => {
-            requestAIConsent(options);
-          }, 1000);
-        },
+}): Promise<boolean> {
+  return new Promise((resolve) => {
+    const finish = async (granted: boolean) => {
+      if (granted) {
+        await setAIConsent(true);
+        options?.onAgree?.();
+      } else {
+        options?.onDisagree?.();
+      }
+      resolve(granted);
+    };
+
+    if (!showModalCallback) {
+      // Fallback if modal not mounted yet
+      finish(false);
+      return;
+    }
+
+    pendingResolver = {
+      resolve: (granted) => {
+        pendingResolver = null;
+        finish(granted);
       },
-      {
-        text: 'Cancel',
-        style: 'cancel',
-        onPress: () => {
-          options.onDisagree?.();
-        },
-      },
-      {
-        text: 'I Agree',
-        style: 'default',
-        onPress: async () => {
-          await setAIConsent(true);
-          options.onAgree();
-        },
-      },
-    ],
-    { cancelable: false }
-  );
+    };
+    showModalCallback(pendingResolver);
+  });
+}
+
+/** Called by AIConsentModal when user taps Agree / Not Now */
+export function resolveAIConsent(granted: boolean) {
+  pendingResolver?.resolve(granted);
+  pendingResolver = null;
+}
+
+/** Ensure consent before an AI action; returns true if allowed to proceed. */
+export async function ensureAIConsent(): Promise<boolean> {
+  if (await hasAIConsent()) return true;
+  return requestAIConsent();
 }

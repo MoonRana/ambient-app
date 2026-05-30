@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
 import {
-  View, Text, StyleSheet, Pressable, Platform, Linking, ScrollView,
+  View, Text, StyleSheet, Pressable, Platform, Linking, ScrollView, useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,7 +9,7 @@ import { Audio } from 'expo-av';
 import * as Haptics from 'expo-haptics';
 import Animated, {
   useSharedValue, useAnimatedStyle, withRepeat, withTiming,
-  withSequence, Easing, FadeInDown, FadeInUp,
+  withSequence, Easing, FadeInDown,
 } from 'react-native-reanimated';
 import { useThemeColors } from '@/constants/colors';
 import { useSessions } from '@/lib/session-context';
@@ -20,6 +20,8 @@ export default function PermissionScreen() {
   const colorScheme = useEffectiveColorScheme();
   const colors = useThemeColors(colorScheme);
   const insets = useSafeAreaInsets();
+  const { width, height } = useWindowDimensions();
+  const isCompact = height < 700 || width > 500;
   const { createSession, currentSession } = useSessions();
   const [permissionResponse, requestPermission] = Audio.usePermissions();
 
@@ -28,7 +30,7 @@ export default function PermissionScreen() {
   useEffect(() => {
     micPulse.value = withRepeat(
       withSequence(
-        withTiming(1.15, { duration: 1000, easing: Easing.inOut(Easing.ease) }),
+        withTiming(1.12, { duration: 1000, easing: Easing.inOut(Easing.ease) }),
         withTiming(1, { duration: 1000, easing: Easing.inOut(Easing.ease) }),
       ),
       -1,
@@ -69,7 +71,7 @@ export default function PermissionScreen() {
       if (!currentSession) createSession();
       router.replace('/(recording)/record');
     }
-  }, []);
+  }, [permissionResponse?.granted]);
 
   const permissionDeniedPermanently =
     permissionResponse &&
@@ -78,6 +80,9 @@ export default function PermissionScreen() {
     !permissionResponse.canAskAgain;
 
   const webTopInset = Platform.OS === 'web' ? 20 : 0;
+  const micOuterSize = isCompact ? 110 : 140;
+  const micInnerSize = isCompact ? 80 : 100;
+  const micIconSize = isCompact ? 40 : 48;
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -98,27 +103,28 @@ export default function PermissionScreen() {
         style={styles.scrollView}
         contentContainerStyle={[
           styles.scrollContent,
-          { paddingBottom: Platform.OS === 'web' ? 40 : Math.max(insets.bottom, 16) + 100 }
+          { paddingBottom: Math.max(insets.bottom, 16) + 24 },
         ]}
         showsVerticalScrollIndicator={false}
+        bounces
       >
-        <View style={styles.content}>
-          <Animated.View entering={FadeInDown.duration(600).delay(100)} style={styles.micSection}>
+        <View style={[styles.content, { maxWidth: Math.min(width - 48, 520) }]}>
+          <Animated.View entering={FadeInDown.duration(400)} style={styles.micSection}>
             <Animated.View
               style={[
                 styles.micOuter,
-                { backgroundColor: `${colors.tint}15` },
+                { backgroundColor: `${colors.tint}15`, width: micOuterSize, height: micOuterSize, borderRadius: micOuterSize / 2 },
                 pulseStyle,
               ]}
             >
-              <View style={[styles.micInner, { backgroundColor: `${colors.tint}25` }]}>
-                <Ionicons name="mic" size={48} color={colors.tint} />
+              <View style={[styles.micInner, { backgroundColor: `${colors.tint}25`, width: micInnerSize, height: micInnerSize, borderRadius: micInnerSize / 2 }]}>
+                <Ionicons name="mic" size={micIconSize} color={colors.tint} />
               </View>
             </Animated.View>
           </Animated.View>
 
-          <Animated.View entering={FadeInDown.duration(600).delay(200)} style={styles.textSection}>
-            <Text style={[styles.title, { color: colors.text }]}>
+          <Animated.View entering={FadeInDown.duration(400).delay(80)} style={styles.textSection}>
+            <Text style={[styles.title, { color: colors.text, fontSize: isCompact ? 22 : 24 }]}>
               Microphone Access
             </Text>
             <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
@@ -126,11 +132,11 @@ export default function PermissionScreen() {
             </Text>
           </Animated.View>
 
-          <Animated.View entering={FadeInDown.duration(600).delay(300)} style={styles.infoCards}>
+          <Animated.View entering={FadeInDown.duration(400).delay(160)} style={styles.infoCards}>
             <InfoCard
               icon="shield-checkmark-outline"
               title="Secure Recording"
-              description="Audio is processed locally and never shared without your consent"
+              description="Audio is processed securely and only shared with AI services after your consent"
               variant="accent"
             />
             <InfoCard
@@ -148,10 +154,14 @@ export default function PermissionScreen() {
         </View>
       </ScrollView>
 
-      <Animated.View
-        entering={FadeInUp.duration(600).delay(400)}
-        style={[styles.footer, { paddingBottom: Platform.OS === 'web' ? 34 : Math.max(insets.bottom, 16) + 8, backgroundColor: colors.background }]}
-      >
+      <View style={[
+        styles.footer,
+        {
+          paddingBottom: Platform.OS === 'web' ? 34 : Math.max(insets.bottom, 16) + 8,
+          backgroundColor: colors.background,
+          borderTopColor: colors.border,
+        },
+      ]}>
         {permissionDeniedPermanently && Platform.OS !== 'web' ? (
           <Pressable
             onPress={handleOpenSettings}
@@ -175,7 +185,7 @@ export default function PermissionScreen() {
             <Text style={styles.primaryButtonText}>Continue</Text>
           </Pressable>
         )}
-      </Animated.View>
+      </View>
     </View>
   );
 }
@@ -189,7 +199,6 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     paddingHorizontal: 20,
     paddingBottom: 8,
-    zIndex: 10,
   },
   closeBtn: {
     width: 36,
@@ -203,39 +212,31 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     flexGrow: 1,
-    justifyContent: 'center',
+    paddingTop: 8,
     alignItems: 'center',
   },
   content: {
     width: '100%',
-    maxWidth: 500,
     paddingHorizontal: 24,
-    gap: 24,
-    alignSelf: 'center',
+    gap: 20,
   },
   micSection: {
     alignItems: 'center',
+    paddingTop: 8,
   },
   micOuter: {
-    width: 140,
-    height: 140,
-    borderRadius: 70,
     alignItems: 'center',
     justifyContent: 'center',
   },
   micInner: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
     alignItems: 'center',
     justifyContent: 'center',
   },
   textSection: {
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
   },
   title: {
-    fontSize: 24,
     fontFamily: 'Inter_700Bold',
     textAlign: 'center',
   },
@@ -244,20 +245,14 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_400Regular',
     textAlign: 'center',
     lineHeight: 22,
-    maxWidth: 320,
   },
   infoCards: {
     gap: 10,
   },
   footer: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
     paddingHorizontal: 24,
     paddingTop: 12,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'transparent',
   },
   primaryButton: {
     flexDirection: 'row',

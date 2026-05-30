@@ -7,6 +7,7 @@ import { useAuth } from '@/lib/auth-context';
 import { useFreestyleStore, type FreestyleWorkflow } from '@/lib/stores/useFreestyleStore';
 import { useJobsStore, type FreestyleJob } from '@/lib/stores/useJobsStore';
 import { generateFreestyle } from '@/lib/api/freestyle';
+import { ensureAIConsent } from '@/lib/ai-consent';
 
 interface UseFreestyleGenerationReturn {
   generate: (workflowId: string) => Promise<string | null>;
@@ -37,6 +38,12 @@ export function useFreestyleGeneration(): UseFreestyleGenerationReturn {
     const workflow = useFreestyleStore.getState().workflows[workflowId];
     if (!workflow || !user) {
       setError('No workflow or user found');
+      return null;
+    }
+
+    const allowed = await ensureAIConsent();
+    if (!allowed) {
+      setError('AI consent is required to generate notes.');
       return null;
     }
 

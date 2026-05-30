@@ -11,7 +11,7 @@ import {
     ConsultMetrics,
 } from './supabase-api';
 import { Alert } from 'react-native';
-import { hasAIConsent, requestAIConsent } from './ai-consent';
+import { ensureAIConsent } from './ai-consent';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -97,6 +97,9 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
     }, []);
 
     const attachDocument = useCallback(async (imageUri: string) => {
+        const allowed = await ensureAIConsent();
+        if (!allowed) return;
+
         setIsExtracting(true);
         try {
             const extractedText = await extractClinicalDocument(imageUri);
@@ -120,19 +123,8 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
     const sendQuestion = useCallback(async (text: string) => {
         if (isStreaming || !text.trim()) return;
 
-        // Check for HIPAA-compliant AI consent
-        const consented = await hasAIConsent();
-        if (!consented) {
-            requestAIConsent({
-                onAgree: () => {
-                    proceedWithQuestion(text);
-                },
-                onDisagree: () => {
-                    setIsStreaming(false);
-                }
-            });
-            return;
-        }
+        const allowed = await ensureAIConsent();
+        if (!allowed) return;
 
         await proceedWithQuestion(text);
     }, [isStreaming, selectedSpecialty, attachedDocument]);

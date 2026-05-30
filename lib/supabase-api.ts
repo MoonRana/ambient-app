@@ -911,6 +911,84 @@ export async function fetchSpecialties(): Promise<Specialty[]> {
   }
 }
 
+/** Parse SSE chunks and invoke stream callbacks. Returns leftover buffer. */
+function consumeSSEBuffer(buffer: string, callbacks: StreamClinicalQACallbacks): string {
+  const events = buffer.split('\n\n');
+  const leftover = events.pop() ?? '';
+  for (const event of events) {
+    const dataLine = event.split('\n').find(l => l.startsWith('data:'));
+    if (!dataLine) continue;
+    const jsonStr = dataLine.slice('data:'.length).trim();
+    if (!jsonStr || jsonStr === '[DONE]') continue;
+    let parsed: any;
+    try { parsed = JSON.parse(jsonStr); } catch { continue; }
+    if (parsed.type === 'metadata') {
+      callbacks.onMetadata?.(
+        parsed.guidelines ?? [],
+        parsed.webSources ?? [],
+        parsed.pubmedSources ?? [],
+        parsed.metrics ?? {},
+      );
+    } else if (parsed.type === 'content') {
+      callbacks.onToken(parsed.text ?? '');
+    } else if (parsed.type === 'done') {
+      callbacks.onDone(parsed.metrics ?? {});
+    } else if (parsed.type === 'error') {
+      callbacks.onError(new Error(parsed.message || 'Stream error'));
+    }
+  }
+  return leftover;
+}
+
+function friendlyConsultError(status: number, body: string): string {
+  if (status === 401) return 'Your session expired. Please sign out and sign in again.';
+  if (status === 404) return 'Consult service is unavailable. Please try again later.';
+  if (status >= 500) return 'Consult service is temporarily unavailable. Please try again.';
+  try {
+    const parsed = JSON.parse(body);
+    if (parsed?.error) return String(parsed.error);
+  } catch { /* ignore */ }
+  return body ? body.slice(0, 200) : `Request failed (${status})`;
+}
+
+async function streamClinicalQAWithFetch(
+  url: string,
+  headers: Record<string, string>,
+  body: object,
+  callbacks: StreamClinicalQACallbacks,
+  signal: AbortSignal,
+): Promise<void> {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { ...headers, Accept: 'text/event-stream' },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '');
+    callbacks.onError(new Error(friendlyConsultError(response.status, errText)));
+    return;
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const text = await response.text();
+    consumeSSEBuffer(text, callbacks);
+    return;
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    buffer = consumeSSEBuffer(buffer, callbacks);
+  }
+  if (buffer.trim()) consumeSSEBuffer(buffer + '\n\n', callbacks);
+}
+
 /**
  * Stream a clinical Q&A question to the clinical-qa Edge Function.
  * Parses the SSE response and fires typed callbacks.
@@ -925,91 +1003,57 @@ export function streamClinicalQA(
   callbacks: StreamClinicalQACallbacks,
 ): AbortController {
   const controller = new AbortController();
-  const xhr = new XMLHttpRequest();
+  const payload = {
+    question: params.question,
+    specialty_id: params.specialty_id ?? null,
+    stream: true,
+    conversation_history: params.conversation_history ?? [],
+  };
 
-  controller.signal.addEventListener('abort', () => {
-    xhr.abort();
-  });
-
-  getAuthHeaders().then(headers => {
+  getAuthHeaders().then(async (headers) => {
     const url = `${getBaseUrl()}/functions/v1/clinical-qa`;
+
+    // Prefer fetch streaming (more reliable on iPad); fall back to XHR.
+    try {
+      await streamClinicalQAWithFetch(url, headers, payload, callbacks, controller.signal);
+      return;
+    } catch (err: any) {
+      if (err?.name === 'AbortError') return;
+      console.warn('[streamClinicalQA] fetch stream failed, trying XHR:', err?.message);
+    }
+
+    const xhr = new XMLHttpRequest();
+    controller.signal.addEventListener('abort', () => xhr.abort());
 
     xhr.open('POST', url);
     for (const [k, v] of Object.entries(headers)) {
       xhr.setRequestHeader(k, v);
     }
-    // Very important to ask for text/event-stream so middleware/routers don't buffer it completely
     xhr.setRequestHeader('Accept', 'text/event-stream');
 
     let seenBytes = 0;
     let buffer = '';
 
     xhr.onreadystatechange = () => {
-      // readyState 3 is LOADING (partial data), 4 is DONE
       if (xhr.readyState === 3 || xhr.readyState === 4) {
         if (xhr.readyState === 4 && xhr.status >= 400 && xhr.status !== 0) {
-          let msg = `HTTP ${xhr.status}`;
-          try {
-            msg = JSON.parse(xhr.responseText)?.error || msg;
-          } catch {
-            if (xhr.responseText) msg += `: ${xhr.responseText}`;
-          }
-          callbacks.onError(new Error(msg));
+          callbacks.onError(new Error(friendlyConsultError(xhr.status, xhr.responseText || '')));
           return;
         }
 
         const currentText = xhr.responseText || '';
         const newData = currentText.substring(seenBytes);
         seenBytes = currentText.length;
-
         buffer += newData;
-
-        // SSE events are separated by double newlines
-        const events = buffer.split('\n\n');
-        // Keep the last (possibly incomplete) chunk in the buffer
-        buffer = events.pop() ?? '';
-
-        for (const event of events) {
-          const dataLine = event
-            .split('\n')
-            .find(l => l.startsWith('data:'));
-          if (!dataLine) continue;
-
-          const jsonStr = dataLine.slice('data:'.length).trim();
-          if (!jsonStr || jsonStr === '[DONE]') continue;
-
-          let parsed: any;
-          try { parsed = JSON.parse(jsonStr); } catch { continue; }
-
-          if (parsed.type === 'metadata') {
-            callbacks.onMetadata?.(
-              parsed.guidelines ?? [],
-              parsed.webSources ?? [],
-              parsed.pubmedSources ?? [],
-              parsed.metrics ?? {},
-            );
-          } else if (parsed.type === 'content') {
-            callbacks.onToken(parsed.text ?? '');
-          } else if (parsed.type === 'done') {
-            callbacks.onDone(parsed.metrics ?? {});
-          } else if (parsed.type === 'error') {
-            callbacks.onError(new Error(parsed.message || 'Stream error'));
-          }
-        }
+        buffer = consumeSSEBuffer(buffer, callbacks);
       }
     };
 
     xhr.onerror = () => {
-      callbacks.onError(new Error('Network error during streaming.'));
+      callbacks.onError(new Error('Network error. Check your connection and try again.'));
     };
 
-    xhr.send(JSON.stringify({
-      question: params.question,
-      specialty_id: params.specialty_id ?? null,
-      stream: true,
-      conversation_history: params.conversation_history ?? [],
-    }));
-
+    xhr.send(JSON.stringify(payload));
   }).catch(err => {
     if (err?.name !== 'AbortError') {
       callbacks.onError(err instanceof Error ? err : new Error(String(err)));

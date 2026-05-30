@@ -26,7 +26,7 @@ import {
 } from '@/lib/supabase-api';
 import { useEffectiveColorScheme } from '@/lib/settings-context';
 import { useAuth } from '@/lib/auth-context';
-import { hasAIConsent, requestAIConsent } from '@/lib/ai-consent';
+import { ensureAIConsent } from '@/lib/ai-consent';
 
 function formatDuration(seconds: number): string {
   const mins = Math.floor(seconds / 60);
@@ -210,20 +210,8 @@ export default function ReviewScreen() {
   const handleGenerateNote = useCallback(async () => {
     if (!currentSession) return;
 
-    // Check for HIPAA-compliant AI consent
-    const consented = await hasAIConsent();
-    if (!consented) {
-      requestAIConsent({
-        onAgree: () => {
-          generateNoteInternal();
-        },
-        onDisagree: () => {
-          setIsGenerating(false);
-          setProcessingProgress(null);
-        }
-      });
-      return;
-    }
+    const allowed = await ensureAIConsent();
+    if (!allowed) return;
 
     await generateNoteInternal();
   }, [currentSession, patientContext]);

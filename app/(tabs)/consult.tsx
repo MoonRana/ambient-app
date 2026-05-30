@@ -253,11 +253,13 @@ function MessageBubble({
                             <View style={styles.errorRow}>
                                 <Ionicons name="alert-circle-outline" size={16} color={colors.recording} />
                                 <Text style={[styles.errorText, { color: colors.recording }]}>
-                                    {message.error.includes('apikey') || message.error.includes('401')
-                                        ? 'Database access denied. Please verify system setup or try again.'
-                                        : message.error.includes('clinical-qa') || message.error.includes('502') || message.error.includes('404')
-                                        ? 'The Consult service is currently unavailable. Please verify Edge Function deployment.'
-                                        : message.error}
+                                    {message.error.includes('session expired')
+                                        ? message.error
+                                        : message.error.includes('401')
+                                        ? 'Your session expired. Please sign out and sign in again.'
+                                        : message.error.includes('502') || message.error.includes('503')
+                                        ? 'Consult is temporarily unavailable. Please try again.'
+                                        : 'Unable to get a response. Check your connection and tap Retry.'}
                                 </Text>
                             </View>
                             {onRetry && (
