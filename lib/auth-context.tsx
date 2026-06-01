@@ -23,6 +23,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     useEffect(() => {
         if (SCREENSHOT_DEMO) {
+            // Ignore real Supabase auth events — demo uses a local mock session only.
             setSession(SCREENSHOT_DEMO_SESSION);
             setIsLoading(false);
             return;
@@ -31,8 +32,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         supabase.auth.getSession().then(({ data: { session }, error }) => {
             if (error) {
                 // Stale / invalid refresh token — clear the session and force re-login
-                console.warn('Auth session error (likely expired token):', error.message);
-                supabase.auth.signOut().catch(() => { });
+                supabase.auth.signOut({ scope: 'local' }).catch(() => { });
                 setSession(null);
             } else {
                 setSession(session);

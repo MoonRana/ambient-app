@@ -12,22 +12,57 @@ import { SessionProvider } from "@/lib/session-context";
 import { SettingsProvider } from "@/lib/settings-context";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { AIConsentProvider } from "@/components/AIConsentProvider";
-import { SCREENSHOT_DEMO, SCREENSHOT_DEMO_JOBS } from "@/lib/screenshot-demo";
+import {
+  SCREENSHOT_DEMO,
+  SCREENSHOT_DEMO_AMBIENT_SESSIONS,
+  SCREENSHOT_DEMO_JOBS,
+} from "@/lib/screenshot-demo";
 import { useJobsStore } from "@/lib/stores/useJobsStore";
+import { useSessions, type AmbientSession } from "@/lib/session-context";
 
 SplashScreen.preventAutoHideAsync();
 
-function routeFromExpoUrl(url: string): string | null {
+function parseExpoUrl(url: string): { pathname: string; params: Record<string, string> } | null {
   const marker = '--';
   const i = url.indexOf(marker);
   if (i === -1) return null;
-  const path = url.slice(i + marker.length).split('?')[0];
-  if (!path || path === '/') return '/(tabs)';
-  return path.startsWith('/') ? path : `/${path}`;
+  const rest = url.slice(i + marker.length);
+  const qIndex = rest.indexOf('?');
+  const pathPart = qIndex === -1 ? rest : rest.slice(0, qIndex);
+  const queryPart = qIndex === -1 ? '' : rest.slice(qIndex + 1);
+  const pathname =
+    !pathPart || pathPart === '/'
+      ? '/(tabs)'
+      : pathPart.startsWith('/')
+        ? pathPart
+        : `/${pathPart}`;
+
+  const params: Record<string, string> = {};
+  if (queryPart) {
+    new URLSearchParams(queryPart).forEach((value, key) => {
+      params[key] = value;
+    });
+  }
+
+  return { pathname, params };
+}
+
+function demoSessionForRoute(pathname: string): AmbientSession | null {
+  if (pathname.includes('/record')) {
+    return SCREENSHOT_DEMO_AMBIENT_SESSIONS.find((s) => s.status === 'recording') ?? null;
+  }
+  if (pathname.includes('/review')) {
+    return SCREENSHOT_DEMO_AMBIENT_SESSIONS.find((s) => s.status === 'reviewing') ?? null;
+  }
+  if (pathname.includes('/patient-info')) {
+    return SCREENSHOT_DEMO_AMBIENT_SESSIONS.find((s) => s.id === 'demo-recording-1') ?? null;
+  }
+  return null;
 }
 
 function ScreenshotDemoSeed() {
   const navigationState = useRootNavigationState();
+  const { setCurrentSession } = useSessions();
 
   useEffect(() => {
     if (!SCREENSHOT_DEMO) return;
@@ -39,14 +74,27 @@ function ScreenshotDemoSeed() {
 
     const go = (url: string | null) => {
       if (!url) return;
-      const route = routeFromExpoUrl(url);
-      if (route) router.replace(route as Href);
+      const parsed = parseExpoUrl(url);
+      if (!parsed) return;
+
+      const demoSession = demoSessionForRoute(parsed.pathname);
+      if (demoSession) setCurrentSession(demoSession);
+
+      if (Object.keys(parsed.params).length > 0) {
+        router.replace({
+          pathname: parsed.pathname as any,
+          params: parsed.params,
+        });
+        return;
+      }
+
+      router.replace(parsed.pathname as Href);
     };
 
     Linking.getInitialURL().then(go);
     const sub = Linking.addEventListener('url', (e) => go(e.url));
     return () => sub.remove();
-  }, [navigationState?.key]);
+  }, [navigationState?.key, setCurrentSession]);
 
   return null;
 }

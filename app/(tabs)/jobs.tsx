@@ -10,6 +10,7 @@ import * as Haptics from 'expo-haptics';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import { useThemeColors } from '@/constants/colors';
 import { useEffectiveColorScheme } from '@/lib/settings-context';
+import { SCREENSHOT_DEMO } from '@/lib/screenshot-demo';
 import { useJobsStore, selectRecentJobs, selectActiveJobs, type FreestyleJob, type JobStatus } from '@/lib/stores/useJobsStore';
 import { getJobStatus } from '@/lib/api/freestyle';
 
@@ -245,6 +246,7 @@ export default function JobsDashboard() {
 
   // Poll active jobs from Supabase every 3s while screen is focused
   const pollActiveJobs = useCallback(async () => {
+    if (SCREENSHOT_DEMO) return;
     const active = selectActiveJobs(useJobsStore.getState().jobs);
     if (active.length === 0) return;
 

@@ -1,6 +1,6 @@
 # App Review resubmission — DoMyNote Ambient (build 9+)
 
-Submission ID: `ab156b51-8a5d-4807-8f1b-4569f8553f60`
+Submission ID: `3e0f6f3e-55fd-47ff-b552-ee470a5896c1` (latest — Guideline 2.3.3 screenshots)
 
 ## Code fixes in this build
 
@@ -11,6 +11,46 @@ Submission ID: `ab156b51-8a5d-4807-8f1b-4569f8553f60`
 | **5.1.1 / 5.1.2 — AI consent** | Full-screen in-app consent modal before any AI data is sent; lists data, providers, and purpose |
 | **5.1.2 — Tracking** | App does **not** track users — update App Store Connect labels (see below) |
 | **Privacy policy** | Updated `legal/privacy-policy.html` with third-party AI disclosure |
+| **2.3.3 — Screenshots** | Fresh 6.5" captures from current build via `npm run screenshots:run` |
+
+---
+
+## Guideline 2.3.3 — Screenshot resubmission (build 9)
+
+Apple rejected the **6.5-inch iPhone** screenshots because they did not reflect the current app UI (Settings was included; core flows were missing).
+
+### Capture fresh screenshots
+
+```bash
+# Boot iPhone 16 Pro Max (or 15 Pro Max) in Simulator, then:
+npm run screenshots:run
+```
+
+Upload PNGs from `store-screenshots/ios-6.5/` (1242×2688) in this order:
+
+| # | Screen | Why |
+|---|--------|-----|
+| 1 | Home | Recent encounters + start recording |
+| 2 | Record | Core ambient scribe flow |
+| 3 | Session detail | Completed SOAP note |
+| 4 | Review | Note generation / SOAP preview |
+| 5 | Freestyle | Document workflows |
+| 6 | Consult | Clinical Q&A |
+| 7 | History | Past sessions |
+| 8 | Patient info | Encounter context capture |
+
+**Do not upload** login, splash, or Settings as primary screenshots.
+
+Use **light mode** consistently. In App Store Connect → Previews and Screenshots → **View All Sizes in Media Manager** if any size slot is hidden.
+
+### Reply to 2.3.3 rejection
+
+```
+Thank you for the feedback. We have replaced all 6.5-inch iPhone screenshots with
+new captures from build 9 that show the app's core functionality: ambient recording,
+SOAP note review, session history, Freestyle document workflows, and STAT Consult.
+Settings and login screens have been removed from the screenshot set.
+```
 
 ---
 

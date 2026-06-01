@@ -147,10 +147,18 @@ async function syncSessionToCloud(session: AmbientSession): Promise<string | nul
   }
 }
 
+const SCREENSHOT_DEMO_INITIAL_SESSION =
+  SCREENSHOT_DEMO_AMBIENT_SESSIONS.find((s) => s.status === 'reviewing') ??
+  SCREENSHOT_DEMO_AMBIENT_SESSIONS[0];
+
 export function SessionProvider({ children }: { children: ReactNode }) {
-  const [sessions, setSessions] = useState<AmbientSession[]>([]);
-  const [currentSession, setCurrentSession] = useState<AmbientSession | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [sessions, setSessions] = useState<AmbientSession[]>(
+    SCREENSHOT_DEMO ? SCREENSHOT_DEMO_AMBIENT_SESSIONS : [],
+  );
+  const [currentSession, setCurrentSession] = useState<AmbientSession | null>(
+    SCREENSHOT_DEMO ? SCREENSHOT_DEMO_INITIAL_SESSION : null,
+  );
+  const [isLoading, setIsLoading] = useState(!SCREENSHOT_DEMO);
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingSyncRef = useRef<Set<string>>(new Set());
 

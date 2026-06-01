@@ -11,6 +11,11 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { useThemeColors } from '@/constants/colors';
 import { useSessions, AmbientSession } from '@/lib/session-context';
+import {
+  SCREENSHOT_DEMO,
+  SCREENSHOT_DEMO_AMBIENT_SESSIONS,
+  SCREENSHOT_DEMO_SESSION_DETAIL_ID,
+} from '@/lib/screenshot-demo';
 import { useEffectiveColorScheme } from '@/lib/settings-context';
 
 function formatDuration(seconds: number): string {
@@ -133,11 +138,18 @@ export default function SessionDetailScreen() {
   const colorScheme = useEffectiveColorScheme();
   const colors = useThemeColors(colorScheme);
   const insets = useSafeAreaInsets();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id: rawIdParam } = useLocalSearchParams<{ id?: string | string[] }>();
+  const rawId = Array.isArray(rawIdParam) ? rawIdParam[0] : rawIdParam;
+  const id = rawId ?? (SCREENSHOT_DEMO ? SCREENSHOT_DEMO_SESSION_DETAIL_ID : undefined);
   const { getSession, deleteSession, setCurrentSession, updateSession } = useSessions();
   const [copied, setCopied] = useState(false);
 
-  const session = id ? getSession(id) : null;
+  const session = id
+    ? getSession(id) ??
+      (SCREENSHOT_DEMO
+        ? SCREENSHOT_DEMO_AMBIENT_SESSIONS.find((s) => s.id === id)
+        : undefined)
+    : null;
 
   const handleDelete = () => {
     Alert.alert(
