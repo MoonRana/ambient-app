@@ -95,8 +95,22 @@ async function processJob(supabase: any, jobId: string, inputs: any, userId: str
   const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
   const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
+  const { data: jobRow } = await supabase
+    .from("freestyle_jobs")
+    .select("created_at")
+    .eq("id", jobId)
+    .single();
+  const jobCreatedAt = jobRow?.created_at ? new Date(jobRow.created_at).getTime() : Date.now();
+  const processStartedAt = Date.now();
+
   const updateJob = (patch: Record<string, any>) =>
     supabase.from("freestyle_jobs").update(patch).eq("id", jobId);
+
+  const logTiming = (step: string, stepStartedAt: number) => {
+    const stepMs = Date.now() - stepStartedAt;
+    const totalMs = Date.now() - jobCreatedAt;
+    console.log(`[freestyle] Job ${jobId} timing — ${step}: ${stepMs}ms (total since created: ${totalMs}ms)`);
+  };
 
   try {
     // ── Step 1: Extract text from all inputs ─────────────────────────────
@@ -123,6 +137,7 @@ async function processJob(supabase: any, jobId: string, inputs: any, userId: str
     // 1c. Audio recordings — transcribe if no transcript provided
     if (inputs.recordings?.length > 0) {
       await updateJob({ progress: 20, current_step: "Transcribing audio recordings" });
+      const transcribeStart = Date.now();
 
       for (let i = 0; i < inputs.recordings.length; i++) {
         const rec = inputs.recordings[i];
@@ -156,65 +171,25 @@ async function processJob(supabase: any, jobId: string, inputs: any, userId: str
           }
         }
       }
+      logTiming("transcription", transcribeStart);
     }
 
-    // 1d. Documents — OCR images, extract text from PDFs
+    // 1d. Documents — OCR images, extract text from PDFs (parallel)
     if (inputs.documents?.length > 0) {
       await updateJob({ progress: 35, current_step: "Extracting text from documents" });
+      const ocrStart = Date.now();
 
-      for (let i = 0; i < inputs.documents.length; i++) {
-        const doc = inputs.documents[i];
-        if (!doc.storage_path) continue;
+      const docParts = await Promise.all(
+        inputs.documents.map((doc: any, i: number) =>
+          processDocument(supabase, doc, OPENAI_API_KEY, SUPABASE_URL, SERVICE_KEY, i),
+        ),
+      );
 
-        try {
-          if (doc.type === 'image' && OPENAI_API_KEY) {
-            // Use OpenAI Vision to OCR the image
-            const { data: urlData } = await supabase.storage
-              .from("freestyle-documents")
-              .createSignedUrl(doc.storage_path, 600);
-
-            if (urlData?.signedUrl) {
-              console.log(`[freestyle] OCR-ing image: ${doc.name}`);
-              const extracted = await extractTextFromImage(OPENAI_API_KEY, urlData.signedUrl);
-              if (extracted) {
-                contentParts.push(`DOCUMENT "${doc.name}":\n${extracted}`);
-                console.log(`[freestyle] Extracted from ${doc.name}: ${extracted.length} chars`);
-              }
-            }
-          } else {
-            // For PDFs or when no API key, try the existing extract-medical-info function
-            try {
-              const { data: urlData } = await supabase.storage
-                .from("freestyle-documents")
-                .createSignedUrl(doc.storage_path, 600);
-
-              if (urlData?.signedUrl) {
-                const extractResp = await fetch(`${SUPABASE_URL}/functions/v1/fast-medical-extract`, {
-                  method: "POST",
-                  headers: {
-                    "Authorization": `Bearer ${SERVICE_KEY}`,
-                    "apikey": SERVICE_KEY,
-                    "Content-Type": "application/json",
-                  },
-                  body: JSON.stringify({ document_url: urlData.signedUrl, document_type: doc.type }),
-                });
-
-                if (extractResp.ok) {
-                  const extractData = await extractResp.json();
-                  const text = extractData.extracted_text || extractData.text || extractData.content || JSON.stringify(extractData);
-                  if (text && text.length > 10) {
-                    contentParts.push(`DOCUMENT "${doc.name}":\n${text}`);
-                  }
-                }
-              }
-            } catch (e: any) {
-              console.warn(`[freestyle] Extraction failed for ${doc.name}:`, e?.message);
-            }
-          }
-        } catch (e: any) {
-          console.warn(`[freestyle] Doc processing failed for ${doc.name}:`, e?.message);
-        }
+      for (const part of docParts) {
+        if (part) contentParts.push(part);
       }
+
+      logTiming(`ocr (${docParts.filter(Boolean).length}/${inputs.documents.length} docs)`, ocrStart);
     }
 
     console.log(`[freestyle] Assembled ${contentParts.length} content sections, total chars: ${contentParts.join('').length}`);
@@ -222,6 +197,7 @@ async function processJob(supabase: any, jobId: string, inputs: any, userId: str
     // ── Step 2: Generate note using existing generate-soap-note ──────────
 
     await updateJob({ status: "generating", progress: 55, current_step: "Generating clinical note" });
+    const generateStart = Date.now();
 
     // Build directive block from custom instructions + target E/M level
     const directiveBlock = buildDirectiveBlock(inputs.custom_instructions, inputs.em_level);
@@ -281,6 +257,8 @@ async function processJob(supabase: any, jobId: string, inputs: any, userId: str
       resultNote = `CLINICAL DOCUMENTATION\n\n${combinedTranscript}\n\n---\nNote: AI generation was not available. Raw clinical content shown above.`;
     }
 
+    logTiming("note generation", generateStart);
+
     // ── Step 3: Complete ─────────────────────────────────────────────────
 
     await updateJob({
@@ -291,7 +269,7 @@ async function processJob(supabase: any, jobId: string, inputs: any, userId: str
       completed_at: new Date().toISOString(),
     });
 
-    console.log(`[freestyle] Job ${jobId} complete`);
+    console.log(`[freestyle] Job ${jobId} complete — created→complete: ${Date.now() - jobCreatedAt}ms, process: ${Date.now() - processStartedAt}ms`);
 
   } catch (err: any) {
     console.error(`[freestyle] Job ${jobId} failed:`, err);
@@ -301,6 +279,67 @@ async function processJob(supabase: any, jobId: string, inputs: any, userId: str
       current_step: null,
     });
   }
+}
+
+// ── Document extraction (runs in parallel per job) ───────────────────────────
+
+async function processDocument(
+  supabase: any,
+  doc: any,
+  openAiKey: string,
+  supabaseUrl: string,
+  serviceKey: string,
+  index: number,
+): Promise<string | null> {
+  if (!doc.storage_path) return null;
+
+  const docLabel = doc.label ? `${doc.name} (${doc.label})` : doc.name;
+
+  try {
+    if (doc.type === "image" && openAiKey) {
+      const { data: urlData } = await supabase.storage
+        .from("freestyle-documents")
+        .createSignedUrl(doc.storage_path, 600);
+
+      if (urlData?.signedUrl) {
+        console.log(`[freestyle] OCR-ing image ${index + 1}: ${doc.name}`);
+        const extracted = await extractTextFromImage(openAiKey, urlData.signedUrl);
+        if (extracted) {
+          console.log(`[freestyle] Extracted from ${doc.name}: ${extracted.length} chars`);
+          return `DOCUMENT "${docLabel}":\n${extracted}`;
+        }
+      }
+      return null;
+    }
+
+    const { data: urlData } = await supabase.storage
+      .from("freestyle-documents")
+      .createSignedUrl(doc.storage_path, 600);
+
+    if (!urlData?.signedUrl) return null;
+
+    const extractResp = await fetch(`${supabaseUrl}/functions/v1/fast-medical-extract`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${serviceKey}`,
+        "apikey": serviceKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ document_url: urlData.signedUrl, document_type: doc.type }),
+    });
+
+    if (!extractResp.ok) return null;
+
+    const extractData = await extractResp.json();
+    const text = extractData.extracted_text || extractData.text || extractData.content || JSON.stringify(extractData);
+    if (text && text.length > 10) {
+      return `DOCUMENT "${docLabel}":\n${text}`;
+    }
+  } catch (e: any) {
+    console.warn(`[freestyle] Doc processing failed for ${doc.name}:`, e?.message);
+  }
+
+  return null;
 }
 
 // ── Documentation directives (custom instructions + E/M level) ───────────────

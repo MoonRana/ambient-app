@@ -14,7 +14,8 @@ import Animated, {
 import { useThemeColors } from '@/constants/colors';
 import { useSessions } from '@/lib/session-context';
 import InfoCard from '@/components/InfoCard';
-import { useEffectiveColorScheme } from '@/lib/settings-context';
+import { useEffectiveColorScheme, useSettings } from '@/lib/settings-context';
+import { permissionContextCopy } from '@/lib/clinical-settings';
 
 export default function PermissionScreen() {
   const colorScheme = useEffectiveColorScheme();
@@ -23,6 +24,7 @@ export default function PermissionScreen() {
   const { width, height } = useWindowDimensions();
   const isCompact = height < 700 || width > 500;
   const { createSession, currentSession } = useSessions();
+  const { clinicalSetting } = useSettings();
   const [permissionResponse, requestPermission] = Audio.usePermissions();
 
   const micPulse = useSharedValue(1);
@@ -128,7 +130,10 @@ export default function PermissionScreen() {
               Microphone Access
             </Text>
             <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
-              DoMyNote needs access to your microphone to record patient encounters for clinical documentation.
+              DoMyNote needs microphone access to record patient encounters for clinical documentation.
+            </Text>
+            <Text style={[styles.contextLine, { color: colors.textTertiary }]}>
+              {permissionContextCopy(clinicalSetting)}
             </Text>
           </Animated.View>
 
@@ -245,6 +250,13 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_400Regular',
     textAlign: 'center',
     lineHeight: 22,
+  },
+  contextLine: {
+    fontSize: 14,
+    fontFamily: 'Inter_400Regular',
+    textAlign: 'center',
+    lineHeight: 20,
+    marginTop: 4,
   },
   infoCards: {
     gap: 10,

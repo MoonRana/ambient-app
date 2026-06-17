@@ -8,6 +8,11 @@ import Animated, { FadeIn } from 'react-native-reanimated';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useThemeColors } from '@/constants/colors';
 import { useSettings, useEffectiveColorScheme } from '@/lib/settings-context';
+import {
+  type ClinicalSetting,
+  type DefaultHomeAction,
+  CLINICAL_SETTING_LABELS,
+} from '@/lib/clinical-settings';
 import { useSessions } from '@/lib/session-context';
 import { useAuth } from '@/lib/auth-context';
 import { BrandMark } from '@/components/BrandLogo';
@@ -129,6 +134,26 @@ export default function SettingsTab() {
     { label: 'Dark', value: 'dark', icon: 'moon-outline' },
   ];
 
+  const clinicalOptions: ClinicalSetting[] = ['clinic', 'nursing_home', 'assisted_living'];
+
+  const homeActionOptions: Array<{ label: string; value: DefaultHomeAction; icon: keyof typeof Ionicons.glyphMap }> = [
+    { label: 'Scan & Generate', value: 'freestyle_capture', icon: 'camera-outline' },
+    { label: 'Freestyle', value: 'freestyle', icon: 'sparkles-outline' },
+    { label: 'Record', value: 'record', icon: 'mic-outline' },
+  ];
+
+  const emLevelOptions: Array<{ code: string | null; label: string }> = [
+    { code: null, label: 'Auto' },
+    { code: '99213', label: '99213' },
+    { code: '99214', label: '99214' },
+    { code: '99215', label: '99215' },
+    { code: '99203', label: '99203' },
+    { code: '99204', label: '99204' },
+    { code: '99205', label: '99205' },
+  ];
+
+  const defaultEmLabel = emLevelOptions.find((o) => o.code === settings.defaultEmLevel)?.label ?? 'Auto';
+
   const webTopInset = Platform.OS === 'web' ? 67 : 0;
 
   const handleClearData = () => {
@@ -226,6 +251,135 @@ export default function SettingsTab() {
                 ))}
               </View>
             </View>
+          </View>
+        </View>
+
+        {/* Clinical Setting */}
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>Clinical Setting</Text>
+          <View style={[styles.sectionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <View style={[styles.settingRow, { borderBottomColor: colors.border, flexDirection: 'column', alignItems: 'flex-start', gap: 12 }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                <View style={[styles.settingIcon, { backgroundColor: `${colors.accent}20` }]}>
+                  <Ionicons name="medkit-outline" size={18} color={colors.accent} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.settingTitle, { color: colors.text }]}>Practice Setting</Text>
+                  <Text style={[styles.settingSubtitle, { color: colors.textTertiary }]}>
+                    Tailors home screen and Freestyle defaults
+                  </Text>
+                </View>
+              </View>
+              <View style={styles.themeSelector}>
+                {clinicalOptions.map((opt) => (
+                  <Pressable
+                    key={opt}
+                    onPress={() => settings.setClinicalSetting(opt)}
+                    style={[
+                      styles.themeOption,
+                      {
+                        backgroundColor: settings.clinicalSetting === opt ? colors.tint : colors.surfaceSecondary,
+                        borderColor: settings.clinicalSetting === opt ? colors.tint : colors.border,
+                        flex: 1,
+                        minWidth: 0,
+                      },
+                    ]}
+                  >
+                    <Text
+                      numberOfLines={1}
+                      style={[
+                        styles.themeOptionText,
+                        { color: settings.clinicalSetting === opt ? '#fff' : colors.textSecondary, fontSize: 12 },
+                      ]}
+                    >
+                      {CLINICAL_SETTING_LABELS[opt]}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          </View>
+        </View>
+
+        {/* My Workflow */}
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>My Workflow</Text>
+          <View style={[styles.sectionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <View style={[styles.settingRow, { borderBottomColor: colors.border, flexDirection: 'column', alignItems: 'flex-start', gap: 12 }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                <View style={[styles.settingIcon, { backgroundColor: `${colors.tint}20` }]}>
+                  <Ionicons name="home-outline" size={18} color={colors.tint} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.settingTitle, { color: colors.text }]}>Primary Home Button</Text>
+                  <Text style={[styles.settingSubtitle, { color: colors.textTertiary }]}>
+                    What opens when you tap the main action on Home
+                  </Text>
+                </View>
+              </View>
+              <View style={styles.themeSelector}>
+                {homeActionOptions.map((opt) => (
+                  <Pressable
+                    key={opt.value}
+                    onPress={() => settings.setDefaultHomeAction(opt.value)}
+                    style={[
+                      styles.themeOption,
+                      {
+                        backgroundColor: settings.defaultHomeAction === opt.value ? colors.tint : colors.surfaceSecondary,
+                        borderColor: settings.defaultHomeAction === opt.value ? colors.tint : colors.border,
+                        flex: 1,
+                        minWidth: 0,
+                      },
+                    ]}
+                  >
+                    <Ionicons
+                      name={opt.icon}
+                      size={14}
+                      color={settings.defaultHomeAction === opt.value ? '#fff' : colors.textSecondary}
+                    />
+                    <Text
+                      numberOfLines={1}
+                      style={[
+                        styles.themeOptionText,
+                        { color: settings.defaultHomeAction === opt.value ? '#fff' : colors.textSecondary, fontSize: 11 },
+                      ]}
+                    >
+                      {opt.label}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+            <SettingRow
+              icon="mic-circle-outline"
+              iconColor={colors.warning}
+              title="Show Recording in Freestyle"
+              subtitle="Display the optional recording section when building notes"
+              toggle
+              value={settings.freestyleShowRecording}
+              onValueChange={settings.setFreestyleShowRecording}
+              colors={colors}
+            />
+            <SettingRow
+              icon="bar-chart-outline"
+              iconColor={colors.accent}
+              title="Default E/M Level"
+              subtitle={`New Freestyle workflows start at ${defaultEmLabel}`}
+              onPress={() => {
+                Alert.alert(
+                  'Default E/M Level',
+                  'Applied when you create a new Freestyle workspace.',
+                  [
+                    ...emLevelOptions.map((opt) => ({
+                      text: opt.label,
+                      onPress: () => settings.setDefaultEmLevel(opt.code),
+                    })),
+                    { text: 'Cancel', style: 'cancel' },
+                  ],
+                );
+              }}
+              colors={colors}
+            />
           </View>
         </View>
 

@@ -1,6 +1,14 @@
-import React, { createContext, useContext, useState, useEffect, useMemo, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, useCallback, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useColorScheme } from 'react-native';
+import {
+  type ClinicalSetting,
+  type DefaultHomeAction,
+  getDefaultsForClinicalSetting,
+} from '@/lib/clinical-settings';
+import { SCREENSHOT_DEMO } from '@/lib/screenshot-demo';
+
+export type { ClinicalSetting, DefaultHomeAction };
 
 interface SettingsContextValue {
   autoSave: boolean;
@@ -12,6 +20,17 @@ interface SettingsContextValue {
   sessionCount: number;
   themePreference: 'system' | 'light' | 'dark';
   setThemePreference: (v: 'system' | 'light' | 'dark') => void;
+  clinicalSetting: ClinicalSetting;
+  setClinicalSetting: (v: ClinicalSetting) => void;
+  hasCompletedOnboarding: boolean;
+  completeOnboarding: (setting: ClinicalSetting) => void;
+  defaultHomeAction: DefaultHomeAction;
+  setDefaultHomeAction: (v: DefaultHomeAction) => void;
+  freestyleShowRecording: boolean;
+  setFreestyleShowRecording: (v: boolean) => void;
+  defaultEmLevel: string | null;
+  setDefaultEmLevel: (v: string | null) => void;
+  settingsLoaded: boolean;
 }
 
 const SettingsContext = createContext<SettingsContextValue | null>(null);
@@ -24,6 +43,11 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const [hapticFeedback, setHapticFeedback] = useState(true);
   const [sessionCount, setSessionCount] = useState(0);
   const [themePreference, setThemePreference] = useState<'system' | 'light' | 'dark'>('system');
+  const [clinicalSetting, setClinicalSettingState] = useState<ClinicalSetting>('clinic');
+  const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState(SCREENSHOT_DEMO);
+  const [defaultHomeAction, setDefaultHomeAction] = useState<DefaultHomeAction>('freestyle_capture');
+  const [freestyleShowRecording, setFreestyleShowRecording] = useState(false);
+  const [defaultEmLevel, setDefaultEmLevel] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
@@ -34,7 +58,18 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     if (loaded) {
       saveSettings();
     }
-  }, [autoSave, highQualityAudio, hapticFeedback, themePreference]);
+  }, [
+    autoSave,
+    highQualityAudio,
+    hapticFeedback,
+    themePreference,
+    clinicalSetting,
+    hasCompletedOnboarding,
+    defaultHomeAction,
+    freestyleShowRecording,
+    defaultEmLevel,
+    loaded,
+  ]);
 
   const loadSettings = async () => {
     try {
@@ -46,6 +81,13 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         setHapticFeedback(parsed.hapticFeedback ?? true);
         setSessionCount(parsed.sessionCount ?? 0);
         setThemePreference(parsed.themePreference ?? 'system');
+        setClinicalSettingState(parsed.clinicalSetting ?? 'clinic');
+        setHasCompletedOnboarding(SCREENSHOT_DEMO || parsed.hasCompletedOnboarding === true);
+        setDefaultHomeAction(parsed.defaultHomeAction ?? 'freestyle_capture');
+        setFreestyleShowRecording(parsed.freestyleShowRecording ?? false);
+        setDefaultEmLevel(parsed.defaultEmLevel ?? null);
+      } else if (SCREENSHOT_DEMO) {
+        setHasCompletedOnboarding(true);
       }
     } catch (e) {
       console.error('Failed to load settings', e);
@@ -62,11 +104,28 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         hapticFeedback,
         sessionCount,
         themePreference,
+        clinicalSetting,
+        hasCompletedOnboarding,
+        defaultHomeAction,
+        freestyleShowRecording,
+        defaultEmLevel,
       }));
     } catch (e) {
       console.error('Failed to save settings', e);
     }
   };
+
+  const setClinicalSetting = useCallback((setting: ClinicalSetting) => {
+    setClinicalSettingState(setting);
+  }, []);
+
+  const completeOnboarding = useCallback((setting: ClinicalSetting) => {
+    const defaults = getDefaultsForClinicalSetting(setting);
+    setClinicalSettingState(setting);
+    setDefaultHomeAction(defaults.defaultHomeAction);
+    setFreestyleShowRecording(defaults.freestyleShowRecording);
+    setHasCompletedOnboarding(true);
+  }, []);
 
   const value = useMemo(() => ({
     autoSave,
@@ -78,7 +137,31 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     sessionCount,
     themePreference,
     setThemePreference,
-  }), [autoSave, highQualityAudio, hapticFeedback, sessionCount, themePreference]);
+    clinicalSetting,
+    setClinicalSetting,
+    hasCompletedOnboarding,
+    completeOnboarding,
+    defaultHomeAction,
+    setDefaultHomeAction,
+    freestyleShowRecording,
+    setFreestyleShowRecording,
+    defaultEmLevel,
+    setDefaultEmLevel,
+    settingsLoaded: loaded,
+  }), [
+    autoSave,
+    highQualityAudio,
+    hapticFeedback,
+    sessionCount,
+    themePreference,
+    clinicalSetting,
+    hasCompletedOnboarding,
+    completeOnboarding,
+    defaultHomeAction,
+    freestyleShowRecording,
+    defaultEmLevel,
+    loaded,
+  ]);
 
   return (
     <SettingsContext.Provider value={value}>

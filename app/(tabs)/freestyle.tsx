@@ -11,10 +11,10 @@ import Animated, {
   withRepeat, withSequence, withTiming, Easing,
 } from 'react-native-reanimated';
 import { useThemeColors } from '@/constants/colors';
-import { useEffectiveColorScheme } from '@/lib/settings-context';
+import { useEffectiveColorScheme, useSettings } from '@/lib/settings-context';
 import { useFreestyleStore } from '@/lib/stores/useFreestyleStore';
 import { useFreestyleGeneration } from '@/lib/hooks/useFreestyleGeneration';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import WorkspaceSummary from '@/components/freestyle/WorkspaceSummary';
 import DocumentDropCard from '@/components/freestyle/DocumentDropCard';
 import MultiRecordingStack from '@/components/freestyle/MultiRecordingStack';
@@ -33,21 +33,28 @@ export default function FreestyleScreen() {
   const createWorkflow = useFreestyleStore((s) => s.createWorkflow);
   const setActiveWorkflow = useFreestyleStore((s) => s.setActiveWorkflow);
   const deleteWorkflow = useFreestyleStore((s) => s.deleteWorkflow);
-  const [showAssist, setShowAssist] = useState(false);
+  const { freestyleShowRecording, defaultEmLevel } = useSettings();
+  const params = useLocalSearchParams<{ capture?: string }>();
+  const [autoCapture, setAutoCapture] = useState(params.capture === '1');
+  const setEmLevel = useFreestyleStore((s) => s.setEmLevel);
 
   // Auto-create a workflow if none exists
   useEffect(() => {
     if (!activeWorkflowId || !workflows[activeWorkflowId]) {
       const workflowIds = Object.keys(workflows);
       if (workflowIds.length > 0) {
-        // Resume the most recent workflow
         const sorted = Object.values(workflows).sort((a, b) => b.updatedAt - a.updatedAt);
         setActiveWorkflow(sorted[0].workflowId);
       } else {
-        createWorkflow();
+        const id = createWorkflow();
+        if (defaultEmLevel) {
+          setEmLevel(id, defaultEmLevel);
+        }
       }
     }
   }, []);
+  const [showAssist, setShowAssist] = useState(false);
+  const collapseRecordings = !freestyleShowRecording;
 
   const activeWorkflow = activeWorkflowId ? workflows[activeWorkflowId] : null;
 
@@ -69,8 +76,11 @@ export default function FreestyleScreen() {
 
   const handleNewWorkflow = useCallback(() => {
     if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    createWorkflow();
-  }, [createWorkflow]);
+    const id = createWorkflow();
+    if (defaultEmLevel) {
+      setEmLevel(id, defaultEmLevel);
+    }
+  }, [createWorkflow, defaultEmLevel, setEmLevel]);
 
   const handleClearWorkflow = useCallback(() => {
     if (!activeWorkflowId) return;
@@ -142,7 +152,7 @@ export default function FreestyleScreen() {
             <View>
               <Text style={[styles.headerTitle, { color: colors.text }]}>Freestyle</Text>
               <Text style={[styles.headerSub, { color: colors.textTertiary }]}>
-                Drop in anything — get a clinical note
+                Photo your labs and notes — we&apos;ll build the H&P
               </Text>
             </View>
             <View style={styles.headerActions}>
@@ -217,36 +227,34 @@ export default function FreestyleScreen() {
 
         {/* ── Input Cards ── */}
         <Animated.View entering={FadeInDown.duration(400).delay(100)} style={styles.cardsSection}>
-          {/* Patient Link */}
+          <DocumentDropCard
+            workflowId={activeWorkflow.workflowId}
+            documents={activeWorkflow.documents}
+            autoCapture={autoCapture}
+            onAutoCaptureHandled={() => setAutoCapture(false)}
+          />
+
+          <QuickNotesCard
+            workflowId={activeWorkflow.workflowId}
+            notes={activeWorkflow.notes}
+          />
+
+          <NoteSettingsCard
+            workflowId={activeWorkflow.workflowId}
+            customInstructions={activeWorkflow.customInstructions ?? ''}
+            emLevel={activeWorkflow.emLevel ?? null}
+          />
+
           <PatientLinkCard
             workflowId={activeWorkflow.workflowId}
             patientId={activeWorkflow.patientId}
             patientInfo={activeWorkflow.patientInfo}
           />
 
-          {/* Documents */}
-          <DocumentDropCard
-            workflowId={activeWorkflow.workflowId}
-            documents={activeWorkflow.documents}
-          />
-
-          {/* Recordings */}
           <MultiRecordingStack
             workflowId={activeWorkflow.workflowId}
             recordings={activeWorkflow.recordings}
-          />
-
-          {/* Quick Notes */}
-          <QuickNotesCard
-            workflowId={activeWorkflow.workflowId}
-            notes={activeWorkflow.notes}
-          />
-
-          {/* Note Settings — custom instructions + E/M level */}
-          <NoteSettingsCard
-            workflowId={activeWorkflow.workflowId}
-            customInstructions={activeWorkflow.customInstructions ?? ''}
-            emLevel={activeWorkflow.emLevel ?? null}
+            defaultCollapsed={collapseRecordings}
           />
         </Animated.View>
 

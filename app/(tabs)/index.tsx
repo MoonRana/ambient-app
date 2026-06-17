@@ -12,7 +12,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useThemeColors } from '@/constants/colors';
 import { useSessions, AmbientSession } from '@/lib/session-context';
-import { useEffectiveColorScheme } from '@/lib/settings-context';
+import { useEffectiveColorScheme, useSettings } from '@/lib/settings-context';
 import { useJobsStore, selectActiveJobs, type FreestyleJob, type JobStatus } from '@/lib/stores/useJobsStore';
 import { useAuth } from '@/lib/auth-context';
 import { BrandMark } from '@/components/BrandLogo';
@@ -259,6 +259,7 @@ export default function HomeHub() {
   const insets = useSafeAreaInsets();
   const { sessions, setCurrentSession, createSession } = useSessions();
   const { user } = useAuth();
+  const { clinicalSetting, defaultHomeAction } = useSettings();
   const jobsMap = useJobsStore((s) => s.jobs);
   const activeJobs = useMemo(() => selectActiveJobs(jobsMap), [jobsMap]);
   const userName = user?.email?.split('@')[0] || '';
@@ -291,6 +292,42 @@ export default function HomeHub() {
   const glowStyle = useAnimatedStyle(() => ({
     opacity: glowOpacity.value,
   }));
+
+  const handleFreestyleWithCapture = () => {
+    if (Platform.OS !== 'web') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }
+    router.push({ pathname: '/(tabs)/freestyle', params: { capture: '1' } } as any);
+  };
+
+  const handlePrimaryHero = () => {
+    if (defaultHomeAction === 'record') {
+      handleStartSession();
+    } else if (defaultHomeAction === 'freestyle_capture') {
+      handleFreestyleWithCapture();
+    } else {
+      handleFreestyle();
+    }
+  };
+
+  const isDocumentFirst = defaultHomeAction !== 'record';
+  const heroUsesMic = !isDocumentFirst;
+
+  const heroLabel = heroUsesMic
+    ? 'Start New Encounter'
+    : defaultHomeAction === 'freestyle_capture'
+      ? 'Scan & Generate'
+      : 'Freestyle H&P';
+
+  const heroSublabel = heroUsesMic
+    ? (clinicalSetting === 'assisted_living'
+      ? 'Record patient conversations when working alone'
+      : 'Tap to record and generate a SOAP note')
+    : 'Upload labs, medications, and prior notes to generate your note';
+
+  const secondaryRecordHint = isDocumentFirst
+    ? 'Optional — best for solo visits in assisted living'
+    : 'Or upload labs and notes in Freestyle';
 
   const handleStartSession = () => {
     if (Platform.OS !== 'web') {
@@ -358,50 +395,64 @@ export default function HomeHub() {
           </Text>
         </View>
 
-        {/* Big mic button with glow */}
+        {/* Primary hero — document-first or recording based on setting */}
         <View style={styles.micWrapper}>
           <Animated.View
             style={[
               styles.micGlow,
-              { backgroundColor: colors.recording },
+              { backgroundColor: heroUsesMic ? colors.recording : colors.tint },
               glowStyle,
             ]}
           />
           <Animated.View style={pulseStyle}>
             <Pressable
-              onPress={handleStartSession}
+              onPress={handlePrimaryHero}
               style={({ pressed }) => [
                 styles.bigMicBtn,
                 {
-                  backgroundColor: colors.recording,
-                  shadowColor: colors.recording,
+                  backgroundColor: heroUsesMic ? colors.recording : colors.tint,
+                  shadowColor: heroUsesMic ? colors.recording : colors.tint,
                   transform: [{ scale: pressed ? 0.92 : 1 }],
                 },
               ]}
             >
-              <Ionicons name="mic" size={48} color="#fff" />
+              <Ionicons
+                name={heroUsesMic ? 'mic' : (defaultHomeAction === 'freestyle_capture' ? 'camera' : 'sparkles')}
+                size={heroUsesMic ? 48 : 44}
+                color="#fff"
+              />
             </Pressable>
           </Animated.View>
         </View>
-        <Text style={[styles.micLabel, { color: colors.text }]}>
-          Start New Encounter
-        </Text>
-        <Text style={[styles.micSublabel, { color: colors.textTertiary }]}>
-          Tap to record and generate a SOAP note
-        </Text>
+        <Text style={[styles.micLabel, { color: colors.text }]}>{heroLabel}</Text>
+        <Text style={[styles.micSublabel, { color: colors.textTertiary }]}>{heroSublabel}</Text>
+
+        {/* Secondary action */}
+        <Pressable
+          onPress={isDocumentFirst ? handleStartSession : handleFreestyleWithCapture}
+          hitSlop={8}
+          style={({ pressed }) => [{ opacity: pressed ? 0.7 : 1, marginTop: 4 }]}
+        >
+          <Text style={[styles.secondaryLink, { color: colors.tint }]}>
+            {isDocumentFirst ? 'Start Recording instead' : 'Scan & Generate instead'}
+          </Text>
+          <Text style={[styles.secondaryHint, { color: colors.textTertiary }]}>{secondaryRecordHint}</Text>
+        </Pressable>
       </Animated.View>
 
       {/* ── Quick Actions Grid ── */}
       <Animated.View entering={FadeInDown.duration(400).delay(200)} style={styles.quickActionsRow}>
-        <QuickActionCard
-          icon="camera-outline"
-          label="Scan Docs"
-          sublabel="Capture & extract"
-          color={colors.accent}
-          bgColor={colors.accentLight}
-          onPress={handleCaptureOnly}
-          colors={colors}
-        />
+        {!isDocumentFirst && (
+          <QuickActionCard
+            icon="camera-outline"
+            label="Scan Docs"
+            sublabel="Capture & extract"
+            color={colors.accent}
+            bgColor={colors.accentLight}
+            onPress={handleFreestyleWithCapture}
+            colors={colors}
+          />
+        )}
         <QuickActionCard
           icon="sparkles-outline"
           label="Freestyle"
@@ -411,6 +462,17 @@ export default function HomeHub() {
           onPress={handleFreestyle}
           colors={colors}
         />
+        {isDocumentFirst && (
+          <QuickActionCard
+            icon="mic-outline"
+            label="Record"
+            sublabel="Optional visit audio"
+            color={colors.recording}
+            bgColor={colors.recordingLight}
+            onPress={handleStartSession}
+            colors={colors}
+          />
+        )}
         <QuickActionCard
           icon="medical-outline"
           label="Consult"
@@ -448,9 +510,10 @@ export default function HomeHub() {
               Your AI-powered clinical scribe. Three ways to generate notes:
             </Text>
             {[
-              { step: '1', icon: 'mic-outline' as const, text: 'Ambient Record — capture encounters hands-free' },
-              { step: '2', icon: 'sparkles-outline' as const, text: 'Freestyle H&P — mix audio, docs & typed notes' },
-              { step: '3', icon: 'medical-outline' as const, text: 'STAT Consult — evidence-based clinical Q&A' },
+              { step: '1', icon: 'camera-outline' as const, text: 'Photo labs & notes — Freestyle builds your H&P' },
+              { step: '2', icon: 'sparkles-outline' as const, text: 'Freestyle — mix documents, typed notes & optional audio' },
+              { step: '3', icon: 'mic-outline' as const, text: 'Recording (optional) — solo visits in assisted living' },
+              { step: '4', icon: 'medical-outline' as const, text: 'STAT Consult — evidence-based clinical Q&A' },
             ].map((item, i) => (
               <View key={i} style={styles.welcomeStep}>
                 <View style={[styles.welcomeStepNum, { backgroundColor: colors.tintLight }]}>
@@ -463,7 +526,7 @@ export default function HomeHub() {
         </Animated.View>
       )}
     </View>
-  ), [greeting, userName, colors, glowStyle, pulseStyle, handleStartSession, handleCaptureOnly, handleFreestyle, activeJobs, sessions]);
+  ), [greeting, userName, colors, glowStyle, pulseStyle, handlePrimaryHero, handleStartSession, handleFreestyleWithCapture, handleFreestyle, isDocumentFirst, heroUsesMic, heroLabel, heroSublabel, secondaryRecordHint, defaultHomeAction, activeJobs, sessions]);
 
   const listFooter = useMemo(() => (
     <Animated.View entering={FadeInUp.duration(400).delay(400)} style={styles.footerSection}>
@@ -577,6 +640,18 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_400Regular',
     textAlign: 'center',
     marginTop: -4,
+    paddingHorizontal: 16,
+  },
+  secondaryLink: {
+    fontSize: 14,
+    fontFamily: 'Inter_600SemiBold',
+    textAlign: 'center',
+  },
+  secondaryHint: {
+    fontSize: 11,
+    fontFamily: 'Inter_400Regular',
+    textAlign: 'center',
+    marginTop: 2,
   },
 
   // ── Quick Actions ──

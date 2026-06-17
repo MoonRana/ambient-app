@@ -21,6 +21,7 @@ export interface DocumentInput {
   sizeBytes: number;
   thumbnailUri?: string;
   storagePath?: string; // set after upload to Supabase Storage
+  label?: string; // e.g. Lab Results, Medication List
   addedAt: number;
 }
 

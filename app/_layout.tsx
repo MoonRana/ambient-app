@@ -9,14 +9,10 @@ import { useFonts, Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_7
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { queryClient } from "@/lib/query-client";
 import { SessionProvider } from "@/lib/session-context";
-import { SettingsProvider } from "@/lib/settings-context";
+import { SettingsProvider, useSettings } from "@/lib/settings-context";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
 import { AIConsentProvider } from "@/components/AIConsentProvider";
-import {
-  SCREENSHOT_DEMO,
-  SCREENSHOT_DEMO_AMBIENT_SESSIONS,
-  SCREENSHOT_DEMO_JOBS,
-} from "@/lib/screenshot-demo";
+import { SCREENSHOT_DEMO, SCREENSHOT_DEMO_AMBIENT_SESSIONS, SCREENSHOT_DEMO_JOBS } from "@/lib/screenshot-demo";
 import { useJobsStore } from "@/lib/stores/useJobsStore";
 import { useSessions, type AmbientSession } from "@/lib/session-context";
 
@@ -101,30 +97,36 @@ function ScreenshotDemoSeed() {
 
 function RootLayoutNav() {
   const { session, isLoading } = useAuth();
+  const { hasCompletedOnboarding, settingsLoaded } = useSettings();
   const segments = useSegments();
   const navigationState = useRootNavigationState();
 
   useEffect(() => {
-    // Wait until both auth check and navigator are ready
-    if (isLoading || !navigationState?.key) return;
+    if (isLoading || !navigationState?.key || !settingsLoaded) return;
 
     const inLoginScreen = segments[0] === 'login';
+    const inOnboarding = (segments[0] as string) === 'onboarding';
 
     if (!session && !inLoginScreen) {
-      // Not authenticated — go to login
       router.replace('/login');
     } else if (session && inLoginScreen) {
-      // Authenticated but stuck on login — go to main app
       router.replace('/(tabs)');
+    } else if (
+      session &&
+      !hasCompletedOnboarding &&
+      !inOnboarding &&
+      !SCREENSHOT_DEMO
+    ) {
+      router.replace('/onboarding/clinical-setting' as Href);
     }
-    // Otherwise: correct screen, do nothing
-  }, [session, isLoading, segments, navigationState?.key]);
+  }, [session, isLoading, segments, navigationState?.key, hasCompletedOnboarding, settingsLoaded]);
 
   return (
     <>
       <ScreenshotDemoSeed />
     <Stack screenOptions={{ headerBackTitle: "Back" }}>
       <Stack.Screen name="login" options={{ headerShown: false }} />
+      <Stack.Screen name="onboarding" options={{ headerShown: false }} />
       <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
       <Stack.Screen
         name="(recording)"

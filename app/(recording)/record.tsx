@@ -551,12 +551,12 @@ export default function RecordScreen() {
           <Pressable
             onPress={() => {
               if (currentSession) updateSession(currentSession.id, { status: 'captured' });
-              router.push('/(recording)/capture');
+              router.push('/(tabs)/freestyle?capture=1');
             }}
             style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1, marginTop: 8 }]}
           >
             <Text style={[styles.skipText, { color: colors.textTertiary }]}>
-              Skip — capture documents only
+              Skip recording — use documents instead
             </Text>
           </Pressable>
         )}
