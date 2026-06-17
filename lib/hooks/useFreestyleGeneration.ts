@@ -185,6 +185,8 @@ export function useFreestyleGeneration(): UseFreestyleGenerationReturn {
           dosage: m.dose,
           frequency: m.frequency,
         })),
+        custom_instructions: workflow.customInstructions || '',
+        em_level: workflow.emLevel ?? null,
       });
 
       setUploadProgress(100);

@@ -19,6 +19,7 @@ import {
   uploadImageToS3,
   type ExtractedMedication,
 } from '@/lib/supabase-api';
+import { ensureAIConsent } from '@/lib/ai-consent';
 import { useEffectiveColorScheme } from '@/lib/settings-context';
 
 function generateId(): string {
@@ -91,6 +92,8 @@ export default function CaptureScreen() {
 
   const handleScanImage = async (img: CapturedImage, docType: DocType) => {
     if (scanningId) return;
+    const allowed = await ensureAIConsent();
+    if (!allowed) return;
     setScanningId(img.id);
 
     if (Platform.OS !== 'web') {

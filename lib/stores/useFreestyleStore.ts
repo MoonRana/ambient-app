@@ -62,6 +62,8 @@ export interface FreestyleWorkflow {
   recordings: RecordingInput[];
   notes: string;
   medications: MedicationInput[];
+  customInstructions: string;   // free-text directions for how to write the note
+  emLevel: string | null;       // target E/M code (e.g. '99214'), null = let AI decide
   createdAt: number;
   updatedAt: number;
   syncStatus: SyncStatus;
@@ -92,6 +94,10 @@ interface FreestyleStore {
 
   // Notes
   setNotes: (workflowId: string, notes: string) => void;
+
+  // Note settings
+  setCustomInstructions: (workflowId: string, instructions: string) => void;
+  setEmLevel: (workflowId: string, emLevel: string | null) => void;
 
   // Medications
   addMedication: (workflowId: string, med: Omit<MedicationInput, 'id'>) => void;
@@ -152,6 +158,8 @@ export const useFreestyleStore = create<FreestyleStore>()(
           recordings: [],
           notes: '',
           medications: [],
+          customInstructions: '',
+          emLevel: null,
           createdAt: now,
           updatedAt: now,
           syncStatus: 'local',
@@ -252,6 +260,15 @@ export const useFreestyleStore = create<FreestyleStore>()(
       // ── Notes ────────────────────────────────────────────────────────
       setNotes: (workflowId, notes) => {
         set((state) => patchWorkflow(state, workflowId, { notes }));
+      },
+
+      // ── Note settings ────────────────────────────────────────────────
+      setCustomInstructions: (workflowId, instructions) => {
+        set((state) => patchWorkflow(state, workflowId, { customInstructions: instructions }));
+      },
+
+      setEmLevel: (workflowId, emLevel) => {
+        set((state) => patchWorkflow(state, workflowId, { emLevel }));
       },
 
       // ── Medications ──────────────────────────────────────────────────

@@ -21,6 +21,7 @@ import WaveformVisualizer from '@/components/WaveformVisualizer';
 import { useEffectiveColorScheme } from '@/lib/settings-context';
 import { playRecordingStart, playRecordingStop } from '@/lib/recording-sounds';
 import { analyzeInsuranceCard, copyToPersistentStorage } from '@/lib/supabase-api';
+import { ensureAIConsent } from '@/lib/ai-consent';
 import { LinearGradient } from 'expo-linear-gradient';
 
 type RecordingState = 'idle' | 'recording' | 'paused';
@@ -269,6 +270,8 @@ export default function RecordScreen() {
 
   const quickScanImage = async (img: CapturedImage) => {
     if (scanningId) return;
+    const allowed = await ensureAIConsent();
+    if (!allowed) return;
     setScanningId(img.id);
     try {
       const info = await analyzeInsuranceCard(img.uri);

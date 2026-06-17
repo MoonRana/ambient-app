@@ -53,6 +53,8 @@ export interface FreestyleGenerateRequest {
     dosage?: string;
     frequency?: string;
   }>;
+  custom_instructions?: string;
+  em_level?: string | null;
 }
 
 export interface FreestyleGenerateResponse {

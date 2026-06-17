@@ -41,9 +41,9 @@ serve(async (req) => {
     }
 
     const body = await req.json();
-    const { patient_id, documents, recordings, notes, medications } = body;
+    const { patient_id, documents, recordings, notes, medications, custom_instructions, em_level } = body;
 
-    console.log(`[freestyle] Input: notes=${notes?.length || 0}ch, meds=${medications?.length || 0}, docs=${documents?.length || 0}, recs=${recordings?.length || 0}`);
+    console.log(`[freestyle] Input: notes=${notes?.length || 0}ch, meds=${medications?.length || 0}, docs=${documents?.length || 0}, recs=${recordings?.length || 0}, instructions=${custom_instructions?.length || 0}ch, em=${em_level || 'auto'}`);
 
     // Create job row — returned immediately
     const { data: job, error: insertError } = await supabaseClient
@@ -54,7 +54,7 @@ serve(async (req) => {
         status: "queued",
         progress: 0,
         current_step: "Waiting in queue",
-        inputs: { documents, recordings, notes, medications },
+        inputs: { documents, recordings, notes, medications, custom_instructions, em_level },
       })
       .select("id")
       .single();
@@ -223,9 +223,17 @@ async function processJob(supabase: any, jobId: string, inputs: any, userId: str
 
     await updateJob({ status: "generating", progress: 55, current_step: "Generating clinical note" });
 
-    const combinedTranscript = contentParts.length > 0
+    // Build directive block from custom instructions + target E/M level
+    const directiveBlock = buildDirectiveBlock(inputs.custom_instructions, inputs.em_level);
+
+    const clinicalContent = contentParts.length > 0
       ? contentParts.join("\n\n---\n\n")
       : "No clinical information was provided for this encounter.";
+
+    // Prepend directives so they lead the prompt the note-writer receives
+    const combinedTranscript = directiveBlock
+      ? `${directiveBlock}\n\n---\n\n${clinicalContent}`
+      : clinicalContent;
 
     let resultNote: string | null = null;
 
@@ -245,6 +253,8 @@ async function processJob(supabase: any, jobId: string, inputs: any, userId: str
           patient_info: inputs.patient_info || {},
           medications: inputs.medications || [],
           diagnoses: [],
+          custom_instructions: inputs.custom_instructions || "",
+          em_level: inputs.em_level || null,
         }),
       });
 
@@ -264,7 +274,7 @@ async function processJob(supabase: any, jobId: string, inputs: any, userId: str
     if (!resultNote && OPENAI_API_KEY) {
       console.log(`[freestyle] Fallback to direct OpenAI`);
       await updateJob({ progress: 70, current_step: "Generating note (fallback)" });
-      resultNote = await generateNoteDirectly(OPENAI_API_KEY, combinedTranscript);
+      resultNote = await generateNoteDirectly(OPENAI_API_KEY, combinedTranscript, directiveBlock);
     }
 
     if (!resultNote) {
@@ -291,6 +301,43 @@ async function processJob(supabase: any, jobId: string, inputs: any, userId: str
       current_step: null,
     });
   }
+}
+
+// ── Documentation directives (custom instructions + E/M level) ───────────────
+
+const EM_LEVEL_GUIDANCE: Record<string, string> = {
+  "99213": "Established patient, low complexity. Expanded problem-focused history and exam; low-complexity medical decision-making.",
+  "99214": "Established patient, moderate complexity. Detailed history and exam; moderate-complexity medical decision-making.",
+  "99215": "Established patient, high complexity. Comprehensive history and exam; high-complexity medical decision-making.",
+  "99203": "New patient, low complexity. Detailed history and exam; low-complexity medical decision-making.",
+  "99204": "New patient, moderate complexity. Comprehensive history and exam; moderate-complexity medical decision-making.",
+  "99205": "New patient, high complexity. Comprehensive history and exam; high-complexity medical decision-making.",
+};
+
+function buildDirectiveBlock(customInstructions?: string, emLevel?: string | null): string {
+  const parts: string[] = [];
+
+  const instructions = (customInstructions || "").trim();
+  if (instructions) {
+    parts.push(`User instructions (follow exactly):\n${instructions}`);
+  }
+
+  if (emLevel && EM_LEVEL_GUIDANCE[emLevel]) {
+    parts.push(
+      `Target E/M level: ${emLevel} — ${EM_LEVEL_GUIDANCE[emLevel]}\n` +
+      `Ensure the HPI, ROS, exam, and medical decision-making detail justify this level of service. ` +
+      `End the note with a line: "Suggested E/M: ${emLevel}".`,
+    );
+  } else {
+    parts.push(
+      `No target E/M level was specified. Choose the most appropriate E/M code based on the documentation ` +
+      `and end the note with a line: "Suggested E/M: <code> (rationale)".`,
+    );
+  }
+
+  if (parts.length === 0) return "";
+
+  return `DOCUMENTATION INSTRUCTIONS (highest priority — follow these over default formatting):\n${parts.join("\n\n")}`;
 }
 
 // ── Whisper Transcription ────────────────────────────────────────────────────
@@ -357,7 +404,11 @@ async function extractTextFromImage(apiKey: string, imageUrl: string): Promise<s
 
 // ── Direct OpenAI Note Generation (fallback) ─────────────────────────────────
 
-async function generateNoteDirectly(apiKey: string, transcript: string): Promise<string> {
+async function generateNoteDirectly(apiKey: string, transcript: string, directiveBlock = ""): Promise<string> {
+  const systemContent = directiveBlock
+    ? `You are a clinical documentation specialist. Generate an H&P note from the provided clinical data. Only include sections with actual data — never write "[Not documented]". Use standard medical format.\n\n${directiveBlock}`
+    : `You are a clinical documentation specialist. Generate an H&P note from the provided clinical data. Only include sections with actual data — never write "[Not documented]". Use standard medical format.`;
+
   const resp = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -369,7 +420,7 @@ async function generateNoteDirectly(apiKey: string, transcript: string): Promise
       messages: [
         {
           role: "system",
-          content: `You are a clinical documentation specialist. Generate an H&P note from the provided clinical data. Only include sections with actual data — never write "[Not documented]". Use standard medical format.`,
+          content: systemContent,
         },
         { role: "user", content: `Generate an H&P note:\n\n${transcript}` },
       ],

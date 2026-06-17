@@ -1,6 +1,67 @@
 # App Review resubmission — DoMyNote Ambient (build 9+)
 
-Submission ID: `3e0f6f3e-55fd-47ff-b552-ee470a5896c1` (latest — Guideline 2.3.3 screenshots)
+Submission ID: `3e0f6f3e-55fd-47ff-b552-ee470a5896c1`
+
+---
+
+## ⚠️ Latest rejection — 5.1.1(i) / 5.1.2(i) (Jun 2, 2026, iPad Air M3)
+
+> "The app appears to share the user's personal data with a third-party AI service but the app does not clearly identify who the data is sent to before sharing the data."
+
+### Root causes found
+
+1. **Code gap — scanning bypassed consent.** Insurance-card / document scanning sent photos to the AI **before** showing the consent modal:
+   - `app/(recording)/record.tsx` → `quickScanImage()` (insurance card quick scan)
+   - `app/(recording)/capture.tsx` → `handleScanImage()` (insurance / clinical / medication scan)
+   - **Fix:** both now call `ensureAIConsent()` first (matches Consult, Freestyle, and SOAP review).
+2. **Privacy policy URL is dead (404).** `https://domynote.com/privacy` returns **404** (root domain is 200). Apple cannot verify the third-party AI disclosure. **This must be published — see manual steps below.**
+
+### Every AI data-sharing path now gated by `ensureAIConsent()`
+
+| Flow | File | Status |
+|------|------|--------|
+| Consult question | `lib/consult-context.tsx` `sendQuestion` | ✅ |
+| Consult document attach | `lib/consult-context.tsx` `attachDocument` | ✅ |
+| SOAP note generation (audio + docs) | `app/(recording)/review.tsx` `handleGenerateNote` | ✅ |
+| Freestyle generation | `lib/hooks/useFreestyleGeneration.ts` | ✅ |
+| Insurance quick scan (record) | `app/(recording)/record.tsx` `quickScanImage` | ✅ (fixed) |
+| Document scan (capture) | `app/(recording)/capture.tsx` `handleScanImage` | ✅ (fixed) |
+
+The consent modal (`components/AIConsentModal.tsx`) explicitly names recipients **before** any data is sent: Supabase, AWS HealthScribe, OpenAI.
+
+### 🔴 REQUIRED manual step — publish the privacy policy
+
+The single biggest blocker. Deploy `legal/privacy-policy.html` so these return **200**:
+
+- `https://domynote.com/privacy`  ← currently **404**
+- `https://domynote.com/terms`    ← currently **404** (deploy `legal/terms-of-service.html`)
+
+The policy already identifies (Section 4) the third-party AI processors, what data is sent, and how it's used. It just isn't live yet.
+
+### Reply to 5.1.1(i) / 5.1.2(i) rejection
+
+```
+Thank you for the detailed feedback. We have addressed both points:
+
+WHO + CONSENT BEFORE SHARING: Every feature that sends data to a third-party AI
+service now shows an in-app "AI Data Processing Consent" screen BEFORE any data
+leaves the device. The screen explicitly names each recipient — Supabase (secure
+hosting/auth), AWS HealthScribe (medical transcription), and OpenAI (note
+generation and consult) — and lists exactly what data is sent. The user must tap
+"I Agree — Enable AI Features" to proceed. We also closed two paths (insurance-card
+and clinical-document scanning) that previously processed images before showing
+this screen; they now require consent first.
+
+PRIVACY POLICY: Our privacy policy now identifies what data we collect, how we
+collect it, all uses, and the third-party AI services we share with (Supabase,
+AWS HealthScribe, OpenAI), including the safeguards they operate under. It is
+published at https://domynote.com/privacy and linked from the consent screen and
+the app's Settings.
+
+This is included in the app build, not only in the Terms of Service.
+```
+
+---
 
 ## Code fixes in this build
 

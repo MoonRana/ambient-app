@@ -19,6 +19,7 @@ import WorkspaceSummary from '@/components/freestyle/WorkspaceSummary';
 import DocumentDropCard from '@/components/freestyle/DocumentDropCard';
 import MultiRecordingStack from '@/components/freestyle/MultiRecordingStack';
 import QuickNotesCard from '@/components/freestyle/QuickNotesCard';
+import NoteSettingsCard from '@/components/freestyle/NoteSettingsCard';
 import PatientLinkCard from '@/components/freestyle/PatientLinkCard';
 import FreestyleAssistDrawer from '@/components/freestyle/FreestyleAssistDrawer';
 
@@ -239,6 +240,13 @@ export default function FreestyleScreen() {
           <QuickNotesCard
             workflowId={activeWorkflow.workflowId}
             notes={activeWorkflow.notes}
+          />
+
+          {/* Note Settings — custom instructions + E/M level */}
+          <NoteSettingsCard
+            workflowId={activeWorkflow.workflowId}
+            customInstructions={activeWorkflow.customInstructions ?? ''}
+            emLevel={activeWorkflow.emLevel ?? null}
           />
         </Animated.View>
 
