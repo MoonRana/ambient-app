@@ -6,12 +6,14 @@ import {
     fetchSpecialties,
     streamClinicalQA,
     extractClinicalDocument,
+    type ExtractProgressPhase,
     Specialty,
     ConsultSource,
     ConsultMetrics,
 } from './supabase-api';
 import { Alert } from 'react-native';
 import { ensureAIConsent } from './ai-consent';
+import { isNoteGenerationRequest, routeToFreestyleWithDocument } from './consult-routing';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -19,7 +21,6 @@ export interface ConsultMessage {
     id: string;
     role: 'user' | 'assistant';
     content: string;
-    /** True while tokens are still arriving */
     streaming?: boolean;
     metadata?: {
         guidelines: ConsultSource[];
@@ -27,10 +28,11 @@ export interface ConsultMessage {
         pubmedSources: ConsultSource[];
         metrics: ConsultMetrics;
     };
-    /** Final performance metrics attached once done */
     doneMetrics?: ConsultMetrics;
     error?: string;
 }
+
+export type ConsultExtractPhase = ExtractProgressPhase | 'idle' | 'waiting';
 
 interface ConsultContextValue {
     messages: ConsultMessage[];
@@ -43,17 +45,23 @@ interface ConsultContextValue {
     newCase: () => void;
     attachedDocument: string | null;
     isExtracting: boolean;
-    attachDocument: (imageUri: string) => Promise<void>;
+    extractPhase: ConsultExtractPhase;
+    attachDocument: (imageUri: string) => void;
     clearDocument: () => void;
+    openFreestyle: () => void;
 }
-
-// ─── Context ──────────────────────────────────────────────────────────────────
 
 const ConsultContext = createContext<ConsultContextValue | null>(null);
 
 function uid() {
     return Date.now().toString(36) + Math.random().toString(36).slice(2);
 }
+
+const CONSULT_EXTRACT_OPTS = {
+    maxWidth: 900,
+    compress: 0.55,
+    timeout: 90_000,
+};
 
 export function ConsultProvider({ children }: { children: ReactNode }) {
     const [messages, setMessages] = useState<ConsultMessage[]>([]);
@@ -62,11 +70,18 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
     const [specialties, setSpecialties] = useState<Specialty[]>([]);
     const [specialtiesLoading, setSpecialtiesLoading] = useState(true);
 
-    // Hold the AbortController so we can cancel on unmount or newCase
     const abortRef = useRef<AbortController | null>(null);
-
-    // History sent to the API — only settled (non-streaming) messages
     const historyRef = useRef<Array<{ role: 'user' | 'assistant'; content: string }>>([]);
+
+    const [attachedDocument, setAttachedDocument] = useState<string | null>(null);
+    const [isExtracting, setIsExtracting] = useState(false);
+    const [extractPhase, setExtractPhase] = useState<ConsultExtractPhase>('idle');
+    const attachedDocumentRef = useRef<string | null>(null);
+    const extractPromiseRef = useRef<Promise<string | null> | null>(null);
+
+    useEffect(() => {
+        attachedDocumentRef.current = attachedDocument;
+    }, [attachedDocument]);
 
     useEffect(() => {
         fetchSpecialties()
@@ -84,9 +99,6 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
         };
     }, []);
 
-    const [attachedDocument, setAttachedDocument] = useState<string | null>(null);
-    const [isExtracting, setIsExtracting] = useState(false);
-
     const newCase = useCallback(() => {
         abortRef.current?.abort();
         abortRef.current = null;
@@ -94,17 +106,24 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
         setMessages([]);
         setIsStreaming(false);
         setAttachedDocument(null);
+        attachedDocumentRef.current = null;
     }, []);
 
-    const attachDocument = useCallback(async (imageUri: string) => {
-        const allowed = await ensureAIConsent();
-        if (!allowed) return;
-
+    const runExtraction = useCallback(async (imageUri: string) => {
         setIsExtracting(true);
+        setExtractPhase('preparing');
+
+        const promise = extractClinicalDocument(imageUri, {
+            ...CONSULT_EXTRACT_OPTS,
+            onProgress: (phase) => setExtractPhase(phase),
+        });
+        extractPromiseRef.current = promise;
+
         try {
-            const extractedText = await extractClinicalDocument(imageUri);
+            const extractedText = await promise;
             if (extractedText) {
                 setAttachedDocument(extractedText);
+                attachedDocumentRef.current = extractedText;
             } else {
                 Alert.alert('Extraction Failed', 'Could not read the document. Please try again with a clearer photo.');
             }
@@ -113,30 +132,56 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
             Alert.alert('Scan Error', 'Failed to process document image.');
         } finally {
             setIsExtracting(false);
+            setExtractPhase('idle');
+            extractPromiseRef.current = null;
         }
     }, []);
 
+    const attachDocument = useCallback((imageUri: string) => {
+        void (async () => {
+            const allowed = await ensureAIConsent();
+            if (!allowed) return;
+            void runExtraction(imageUri);
+        })();
+    }, [runExtraction]);
+
     const clearDocument = useCallback(() => {
         setAttachedDocument(null);
+        attachedDocumentRef.current = null;
     }, []);
 
-    const sendQuestion = useCallback(async (text: string) => {
-        if (isStreaming || !text.trim()) return;
+    const openFreestyle = useCallback(() => {
+        routeToFreestyleWithDocument(attachedDocumentRef.current);
+    }, []);
 
-        const allowed = await ensureAIConsent();
-        if (!allowed) return;
+    const resolveAttachedDocument = useCallback(async (): Promise<string | null> => {
+        if (attachedDocumentRef.current) return attachedDocumentRef.current;
+        if (extractPromiseRef.current) {
+            setExtractPhase('waiting');
+            try {
+                const text = await extractPromiseRef.current;
+                if (text) {
+                    setAttachedDocument(text);
+                    attachedDocumentRef.current = text;
+                }
+                return text;
+            } finally {
+                if (!extractPromiseRef.current) {
+                    setExtractPhase('idle');
+                }
+            }
+        }
+        return null;
+    }, []);
 
-        await proceedWithQuestion(text);
-    }, [isStreaming, selectedSpecialty, attachedDocument]);
-
-    const proceedWithQuestion = async (text: string) => {
+    const proceedWithQuestion = useCallback(async (text: string) => {
+        const doc = await resolveAttachedDocument();
         const userMsg: ConsultMessage = { id: uid(), role: 'user', content: text.trim() };
 
-        // Build enriched question if document is attached
         let enrichedQuestion = text.trim();
-        if (attachedDocument) {
+        if (doc) {
             enrichedQuestion =
-                `**Scanned Clinical Document:**\n${attachedDocument}\n\n` +
+                `**Scanned Clinical Document:**\n${doc}\n\n` +
                 `**Question:** ${text.trim()}`;
         }
 
@@ -151,7 +196,6 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
         setMessages(prev => [...prev, userMsg, assistantMsg]);
         setIsStreaming(true);
 
-        // Build history from settled messages + this new user turn
         const history = [
             ...historyRef.current,
             { role: 'user' as const, content: text.trim() },
@@ -185,7 +229,6 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
                                 ? { ...m, streaming: false, doneMetrics }
                                 : m,
                         );
-                        // Snapshot history for next turn
                         const settled = updated
                             .filter(m => !m.streaming)
                             .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
@@ -206,10 +249,37 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
         );
 
         abortRef.current = controller;
-
-        // Clear the document after sending
         setAttachedDocument(null);
-    };
+        attachedDocumentRef.current = null;
+    }, [selectedSpecialty, resolveAttachedDocument]);
+
+    const sendQuestion = useCallback(async (text: string) => {
+        if (isStreaming || !text.trim()) return;
+
+        const allowed = await ensureAIConsent();
+        if (!allowed) return;
+
+        if (isNoteGenerationRequest(text)) {
+            Alert.alert(
+                'Generate a clinical note?',
+                'STAT Consult answers clinical questions. To build an H&P or SOAP note from labs and documents, use Freestyle.',
+                [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                        text: 'Open Freestyle',
+                        onPress: async () => {
+                            const doc = await resolveAttachedDocument();
+                            routeToFreestyleWithDocument(doc);
+                        },
+                    },
+                    { text: 'Ask here anyway', onPress: () => proceedWithQuestion(text) },
+                ],
+            );
+            return;
+        }
+
+        await proceedWithQuestion(text);
+    }, [isStreaming, proceedWithQuestion, resolveAttachedDocument]);
 
     const value = useMemo<ConsultContextValue>(() => ({
         messages,
@@ -222,9 +292,15 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
         newCase,
         attachedDocument,
         isExtracting,
+        extractPhase,
         attachDocument,
         clearDocument,
-    }), [messages, isStreaming, selectedSpecialty, specialties, specialtiesLoading, sendQuestion, newCase, attachedDocument, isExtracting]);
+        openFreestyle,
+    }), [
+        messages, isStreaming, selectedSpecialty, specialties, specialtiesLoading,
+        sendQuestion, newCase, attachedDocument, isExtracting, extractPhase,
+        attachDocument, clearDocument, openFreestyle,
+    ]);
 
     return (
         <ConsultContext.Provider value={value}>

@@ -15,8 +15,20 @@ import Animated, {
 import Markdown from 'react-native-markdown-display';
 import { useThemeColors } from '@/constants/colors';
 import { useEffectiveColorScheme } from '@/lib/settings-context';
-import { ConsultProvider, useConsult, ConsultMessage } from '@/lib/consult-context';
+import { ConsultProvider, useConsult, ConsultMessage, type ConsultExtractPhase } from '@/lib/consult-context';
 import { ConsultSource, ConsultMetrics } from '@/lib/supabase-api';
+
+// ─── Extract progress copy ────────────────────────────────────────────────────
+
+function extractPhaseLabel(phase: ConsultExtractPhase): string {
+    switch (phase) {
+        case 'preparing': return 'Preparing image…';
+        case 'uploading': return 'Uploading document…';
+        case 'reading': return 'Reading document…';
+        case 'waiting': return 'Finishing scan…';
+        default: return 'Scanning document…';
+    }
+}
 
 // ─── Typing indicator dots ────────────────────────────────────────────────────
 
@@ -361,8 +373,10 @@ function ConsultScreen() {
         newCase,
         attachedDocument,
         isExtracting,
+        extractPhase,
         attachDocument,
         clearDocument,
+        openFreestyle,
     } = useConsult();
 
     const [input, setInput] = useState('');
@@ -428,7 +442,6 @@ function ConsultScreen() {
         sendQuestion(text);
         setInput('');
         inputRef.current?.blur();
-        // Always scroll to bottom when sending
         scrollToBottom();
     }, [input, isStreaming, sendQuestion, scrollToBottom]);
 
@@ -447,14 +460,14 @@ function ConsultScreen() {
             return;
         }
         const result = await ImagePicker.launchCameraAsync({
-            quality: 0.8,
+            quality: 0.65,
             allowsEditing: false,
         });
         if (result.canceled || !result.assets?.[0]?.uri) return;
         if (Platform.OS !== 'web') {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
         }
-        await attachDocument(result.assets[0].uri);
+        attachDocument(result.assets[0].uri);
     }, [attachDocument]);
 
     const webTopInset = Platform.OS === 'web' ? 67 : 0;
@@ -539,6 +552,25 @@ function ConsultScreen() {
                         <Text style={[styles.emptySubtitle, { color: colors.textSecondary }]}>
                             Evidence-based answers with guidelines, PubMed citations, and medical society sources.
                         </Text>
+                        <Pressable
+                            onPress={openFreestyle}
+                            style={({ pressed }) => [
+                                styles.freestyleHint,
+                                {
+                                    backgroundColor: `${colors.accent}10`,
+                                    borderColor: `${colors.accent}35`,
+                                    opacity: pressed ? 0.85 : 1,
+                                },
+                            ]}
+                        >
+                            <Ionicons name="sparkles" size={16} color={colors.accent} />
+                            <Text style={[styles.freestyleHintText, { color: colors.textSecondary }]}>
+                                Need an H&P from labs? Use{' '}
+                                <Text style={{ color: colors.accent, fontFamily: 'Inter_600SemiBold' }}>Freestyle</Text>
+                                {' '}to build a note.
+                            </Text>
+                            <Ionicons name="chevron-forward" size={14} color={colors.accent} />
+                        </Pressable>
                         <View style={styles.examplesContainer}>
                             {[
                                 'First-line treatment for hypertensive emergency?',
@@ -651,7 +683,10 @@ function ConsultScreen() {
                     <View style={[styles.extractingBar, { backgroundColor: colors.surfaceSecondary }]}>
                         <ActivityIndicator size="small" color={colors.tint} />
                         <Text style={[styles.extractingText, { color: colors.textSecondary }]}>
-                            Scanning document...
+                            {extractPhaseLabel(extractPhase)}
+                        </Text>
+                        <Text style={[styles.extractingHint, { color: colors.textTertiary }]}>
+                            You can type your question while we scan
                         </Text>
                     </View>
                 )}
@@ -660,10 +695,10 @@ function ConsultScreen() {
                     {/* Camera button */}
                     <Pressable
                         onPress={handleCameraCapture}
-                        disabled={isExtracting || isStreaming}
+                        disabled={isStreaming}
                         style={({ pressed }) => [
                             styles.cameraBtn,
-                            { opacity: (isExtracting || isStreaming) ? 0.4 : pressed ? 0.7 : 1 },
+                            { opacity: isStreaming ? 0.4 : pressed ? 0.7 : 1 },
                         ]}
                     >
                         <Ionicons
@@ -682,30 +717,30 @@ function ConsultScreen() {
                         onChangeText={setInput}
                         multiline
                         maxLength={2000}
-                        editable={!isStreaming && !isExtracting}
+                        editable={!isStreaming}
                         onSubmitEditing={handleSend}
                         blurOnSubmit={false}
                     />
                     <Pressable
                         onPress={handleSend}
-                        disabled={(!input.trim() && !attachedDocument) || isStreaming || isExtracting}
+                        disabled={!input.trim() || isStreaming}
                         style={({ pressed }) => [
                             styles.sendBtn,
                             {
-                                backgroundColor: (input.trim() || attachedDocument) && !isStreaming
+                                backgroundColor: input.trim() && !isStreaming
                                     ? colors.tint
                                     : colors.surfaceSecondary,
                                 opacity: pressed ? 0.8 : 1,
                             },
                         ]}
                     >
-                        {isStreaming ? (
+                        {isStreaming || (isExtracting && extractPhase === 'waiting') ? (
                             <ActivityIndicator size="small" color={colors.textTertiary} />
                         ) : (
                             <Ionicons
                                 name="arrow-up"
                                 size={20}
-                                color={(input.trim() || attachedDocument) ? '#fff' : colors.textTertiary}
+                                color={input.trim() ? '#fff' : colors.textTertiary}
                             />
                         )}
                     </Pressable>
@@ -886,11 +921,34 @@ const styles = StyleSheet.create({
         flex: 1, fontSize: 13, fontFamily: 'Inter_500Medium',
     },
     extractingBar: {
-        flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-        gap: 8, paddingVertical: 10, borderRadius: 12, marginBottom: 6,
+        flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center',
+        gap: 8, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 12, marginBottom: 6,
     },
     extractingText: {
-        fontSize: 13, fontFamily: 'Inter_400Regular',
+        fontSize: 13, fontFamily: 'Inter_500Medium',
+    },
+    extractingHint: {
+        width: '100%',
+        fontSize: 11,
+        fontFamily: 'Inter_400Regular',
+        textAlign: 'center',
+    },
+    freestyleHint: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        marginTop: 16,
+        paddingHorizontal: 14,
+        paddingVertical: 12,
+        borderRadius: 12,
+        borderWidth: 1,
+        maxWidth: 340,
+    },
+    freestyleHintText: {
+        flex: 1,
+        fontSize: 13,
+        fontFamily: 'Inter_400Regular',
+        lineHeight: 18,
     },
     cameraBtn: {
         padding: 4,

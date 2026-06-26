@@ -441,9 +441,30 @@ export async function analyzeInsuranceCard(imageUri: string): Promise<{
  * Returns a free-text string ready to be appended to documentContext,
  * or null if extraction fails (non-fatal).
  */
-export async function extractClinicalDocument(imageUri: string): Promise<string | null> {
+export type ExtractProgressPhase = 'preparing' | 'uploading' | 'reading';
+
+export interface ExtractDocumentOptions {
+  /** Max width in px — default 1200 (full), use ~900 for faster Consult attach */
+  maxWidth?: number;
+  /** JPEG quality 0–1 — default 0.7 */
+  compress?: number;
+  onProgress?: (phase: ExtractProgressPhase) => void;
+  /** Request timeout ms — default 120000 */
+  timeout?: number;
+}
+
+export async function extractClinicalDocument(
+  imageUri: string,
+  options: ExtractDocumentOptions = {},
+): Promise<string | null> {
+  const maxWidth = options.maxWidth ?? 1200;
+  const compress = options.compress ?? 0.7;
+  const timeout = options.timeout ?? 120000;
+
   let imageBase64: string;
   const mimeType = 'image/jpeg';
+
+  options.onProgress?.('preparing');
 
   try {
     if (Platform.OS === 'web') {
@@ -452,17 +473,16 @@ export async function extractClinicalDocument(imageUri: string): Promise<string 
       imageBase64 = await new Promise<string>((resolve, reject) => {
         const img = new Image();
         img.onload = () => {
-          const MAX = 1200; // clinical docs — need readable text
           let { width, height } = img;
-          if (width > MAX || height > MAX) {
-            if (width > height) { height = Math.round(height * MAX / width); width = MAX; }
-            else { width = Math.round(width * MAX / height); height = MAX; }
+          if (width > maxWidth || height > maxWidth) {
+            if (width > height) { height = Math.round(height * maxWidth / width); width = maxWidth; }
+            else { width = Math.round(width * maxWidth / height); height = maxWidth; }
           }
           const canvas = document.createElement('canvas');
           canvas.width = width; canvas.height = height;
           const ctx = canvas.getContext('2d')!;
           ctx.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', 0.8).split(',')[1]);
+          resolve(canvas.toDataURL('image/jpeg', compress).split(',')[1]);
         };
         img.onerror = reject;
         img.src = URL.createObjectURL(blob);
@@ -471,8 +491,8 @@ export async function extractClinicalDocument(imageUri: string): Promise<string 
       try {
         const manipulated = await ImageManipulator.manipulateAsync(
           imageUri,
-          [{ resize: { width: 1200 } }],
-          { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG }
+          [{ resize: { width: maxWidth } }],
+          { compress, format: ImageManipulator.SaveFormat.JPEG },
         );
         imageBase64 = await FileSystem.readAsStringAsync(manipulated.uri, {
           encoding: FileSystem.EncodingType.Base64,
@@ -488,6 +508,8 @@ export async function extractClinicalDocument(imageUri: string): Promise<string 
     return null;
   }
 
+  options.onProgress?.('uploading');
+
   try {
     const headers = await getAuthHeaders();
     const response = await fetchWithTimeout(`${getBaseUrl()}/functions/v1/extract-document-info`, {
@@ -498,7 +520,9 @@ export async function extractClinicalDocument(imageUri: string): Promise<string 
         mime_type: mimeType,
         document_type: 'clinical',
       }),
-    });
+    }, timeout);
+
+    options.onProgress?.('reading');
 
     const rawText = await response.text();
     console.log('[extractClinicalDocument] HTTP status:', response.status);
