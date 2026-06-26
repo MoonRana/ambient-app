@@ -494,7 +494,7 @@ export default function SettingsTab() {
               icon="information-circle"
               iconColor={colors.tint}
               title="Version"
-              subtitle="1.0.0"
+              subtitle="1.0.1"
               colors={colors}
             />
           </View>
@@ -504,7 +504,7 @@ export default function SettingsTab() {
         <View style={styles.footerBranding}>
           <BrandMark size={36} tintColor={colors.tint} />
           <Text style={[styles.footerAppName, { color: colors.textSecondary }]}>DoMy<Text style={{ color: colors.tint }}>Note</Text></Text>
-          <Text style={[styles.footerVersion, { color: colors.textTertiary }]}>Version 1.0.0</Text>
+          <Text style={[styles.footerVersion, { color: colors.textTertiary }]}>Version 1.0.1</Text>
           <Text style={[styles.footerCopy, { color: colors.textTertiary }]}>
             Made with ❤️ for clinicians
           </Text>
