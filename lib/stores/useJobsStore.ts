@@ -22,6 +22,7 @@ export interface FreestyleJob {
   progress: number;          // 0–100
   currentStep?: string;
   resultNote?: string;
+  cmeTidbits?: Array<{ id: string; topic: string; body: string }>;
   error?: string;
   createdAt: number;
   completedAt?: number;

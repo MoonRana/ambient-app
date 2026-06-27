@@ -134,62 +134,37 @@ async function processJob(supabase: any, jobId: string, inputs: any, userId: str
       contentParts.push(`CURRENT MEDICATIONS:\n${medLines}`);
     }
 
-    // 1c. Audio recordings — transcribe if no transcript provided
-    if (inputs.recordings?.length > 0) {
-      await updateJob({ progress: 20, current_step: "Transcribing audio recordings" });
-      const transcribeStart = Date.now();
+    // 1c + 1d — Transcription and document OCR in parallel
+    const hasRecordings = inputs.recordings?.length > 0;
+    const hasDocuments = inputs.documents?.length > 0;
 
-      for (let i = 0; i < inputs.recordings.length; i++) {
-        const rec = inputs.recordings[i];
+    if (hasRecordings || hasDocuments) {
+      await updateJob({
+        progress: 20,
+        current_step: hasRecordings && hasDocuments
+          ? "Processing audio and documents"
+          : hasRecordings
+            ? "Transcribing audio recordings"
+            : "Extracting text from documents",
+      });
+      const extractStart = Date.now();
 
-        // If transcript already exists, use it
-        if (rec.transcript?.trim()) {
-          contentParts.push(`ENCOUNTER RECORDING ${i + 1}:\n${rec.transcript.trim()}`);
-          continue;
-        }
+      const [recordingParts, documentParts] = await Promise.all([
+        extractAllRecordings(supabase, inputs.recordings, OPENAI_API_KEY, updateJob),
+        extractAllDocuments(supabase, inputs.documents, OPENAI_API_KEY, SUPABASE_URL, SERVICE_KEY, updateJob),
+      ]);
 
-        // Otherwise, download from storage and transcribe with Whisper
-        if (rec.storage_path && OPENAI_API_KEY) {
-          try {
-            console.log(`[freestyle] Transcribing recording: ${rec.storage_path}`);
-            const { data: audioData, error: dlError } = await supabase.storage
-              .from("freestyle-recordings")
-              .download(rec.storage_path);
-
-            if (dlError || !audioData) {
-              console.warn(`[freestyle] Download failed: ${dlError?.message}`);
-              continue;
-            }
-
-            const transcript = await transcribeWithWhisper(OPENAI_API_KEY, audioData, rec.storage_path);
-            if (transcript) {
-              contentParts.push(`ENCOUNTER RECORDING ${i + 1} (${rec.duration_s || '?'}s):\n${transcript}`);
-              console.log(`[freestyle] Transcribed recording ${i + 1}: ${transcript.length} chars`);
-            }
-          } catch (e: any) {
-            console.warn(`[freestyle] Transcription failed for recording ${i + 1}:`, e?.message);
-          }
-        }
+      for (const part of recordingParts) {
+        if (part) contentParts.push(part);
       }
-      logTiming("transcription", transcribeStart);
-    }
-
-    // 1d. Documents — OCR images, extract text from PDFs (parallel)
-    if (inputs.documents?.length > 0) {
-      await updateJob({ progress: 35, current_step: "Extracting text from documents" });
-      const ocrStart = Date.now();
-
-      const docParts = await Promise.all(
-        inputs.documents.map((doc: any, i: number) =>
-          processDocument(supabase, doc, OPENAI_API_KEY, SUPABASE_URL, SERVICE_KEY, i),
-        ),
-      );
-
-      for (const part of docParts) {
+      for (const part of documentParts) {
         if (part) contentParts.push(part);
       }
 
-      logTiming(`ocr (${docParts.filter(Boolean).length}/${inputs.documents.length} docs)`, ocrStart);
+      logTiming(
+        `extract (recs=${recordingParts.filter(Boolean).length}, docs=${documentParts.filter(Boolean).length})`,
+        extractStart,
+      );
     }
 
     console.log(`[freestyle] Assembled ${contentParts.length} content sections, total chars: ${contentParts.join('').length}`);
@@ -259,6 +234,17 @@ async function processJob(supabase: any, jobId: string, inputs: any, userId: str
 
     logTiming("note generation", generateStart);
 
+    // Generate CME learning tidbits from the completed note
+    let cmeTidbits: Array<{ id: string; topic: string; body: string }> = [];
+    if (OPENAI_API_KEY && resultNote) {
+      try {
+        cmeTidbits = await generateCmeTidbits(OPENAI_API_KEY, resultNote);
+        console.log(`[freestyle] Generated ${cmeTidbits.length} CME tidbits`);
+      } catch (e: any) {
+        console.warn(`[freestyle] Tidbit generation failed:`, e?.message);
+      }
+    }
+
     // ── Step 3: Complete ─────────────────────────────────────────────────
 
     await updateJob({
@@ -266,6 +252,7 @@ async function processJob(supabase: any, jobId: string, inputs: any, userId: str
       progress: 100,
       current_step: null,
       result_note: resultNote,
+      cme_tidbits: cmeTidbits,
       completed_at: new Date().toISOString(),
     });
 
@@ -279,6 +266,64 @@ async function processJob(supabase: any, jobId: string, inputs: any, userId: str
       current_step: null,
     });
   }
+}
+
+// ── Parallel extraction helpers ─────────────────────────────────────────────
+
+async function extractAllRecordings(
+  supabase: any,
+  recordings: any[] | undefined,
+  openAiKey: string,
+  updateJob: (patch: Record<string, any>) => Promise<any>,
+): Promise<Array<string | null>> {
+  if (!recordings?.length) return [];
+
+  return Promise.all(
+    recordings.map(async (rec, i) => {
+      if (rec.transcript?.trim()) {
+        return `ENCOUNTER RECORDING ${i + 1}:\n${rec.transcript.trim()}`;
+      }
+      if (!rec.storage_path || !openAiKey) return null;
+
+      try {
+        console.log(`[freestyle] Transcribing recording: ${rec.storage_path}`);
+        const { data: audioData, error: dlError } = await supabase.storage
+          .from("freestyle-recordings")
+          .download(rec.storage_path);
+
+        if (dlError || !audioData) {
+          console.warn(`[freestyle] Download failed: ${dlError?.message}`);
+          return null;
+        }
+
+        const transcript = await transcribeWithWhisper(openAiKey, audioData, rec.storage_path);
+        if (transcript) {
+          console.log(`[freestyle] Transcribed recording ${i + 1}: ${transcript.length} chars`);
+          return `ENCOUNTER RECORDING ${i + 1} (${rec.duration_s || '?'}s):\n${transcript}`;
+        }
+      } catch (e: any) {
+        console.warn(`[freestyle] Transcription failed for recording ${i + 1}:`, e?.message);
+      }
+      return null;
+    }),
+  );
+}
+
+async function extractAllDocuments(
+  supabase: any,
+  documents: any[] | undefined,
+  openAiKey: string,
+  supabaseUrl: string,
+  serviceKey: string,
+  _updateJob: (patch: Record<string, any>) => Promise<any>,
+): Promise<Array<string | null>> {
+  if (!documents?.length) return [];
+
+  return Promise.all(
+    documents.map((doc, i) =>
+      processDocument(supabase, doc, openAiKey, supabaseUrl, serviceKey, i),
+    ),
+  );
 }
 
 // ── Document extraction (runs in parallel per job) ───────────────────────────
@@ -405,9 +450,24 @@ async function transcribeWithWhisper(apiKey: string, audioBlob: Blob, filename: 
   return text.trim() || null;
 }
 
-// ── OpenAI Vision OCR ────────────────────────────────────────────────────────
-
 async function extractTextFromImage(apiKey: string, imageUrl: string): Promise<string | null> {
+  const MIN_CHARS = 80;
+
+  const fast = await callVisionOcr(apiKey, imageUrl, "gpt-4o-mini", "auto", 2000);
+  if (fast && fast.length >= MIN_CHARS) return fast;
+
+  console.log(`[freestyle] Fast OCR short (${fast?.length ?? 0} chars), retrying high-detail`);
+  const detailed = await callVisionOcr(apiKey, imageUrl, "gpt-4o", "high", 4000);
+  return detailed || fast;
+}
+
+async function callVisionOcr(
+  apiKey: string,
+  imageUrl: string,
+  model: string,
+  detail: string,
+  maxTokens: number,
+): Promise<string | null> {
   const resp = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -415,18 +475,18 @@ async function extractTextFromImage(apiKey: string, imageUrl: string): Promise<s
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "gpt-4o",
+      model,
       messages: [{
         role: "user",
         content: [
           {
             type: "text",
-            text: "Extract ALL text from this medical document image. Include every detail: patient info, medications, vitals, diagnoses, labs, notes, instructions. Return the raw extracted text only, no commentary.",
+            text: "Extract ALL text from this medical document image. Include patient info, medications, vitals, diagnoses, labs, notes. Return raw extracted text only.",
           },
-          { type: "image_url", image_url: { url: imageUrl, detail: "high" } },
+          { type: "image_url", image_url: { url: imageUrl, detail } },
         ],
       }],
-      max_tokens: 4000,
+      max_tokens: maxTokens,
       temperature: 0.1,
     }),
   });
@@ -440,6 +500,53 @@ async function extractTextFromImage(apiKey: string, imageUrl: string): Promise<s
   const data = await resp.json();
   return data.choices?.[0]?.message?.content?.trim() || null;
 }
+
+async function generateCmeTidbits(
+  apiKey: string,
+  note: string,
+): Promise<Array<{ id: string; topic: string; body: string }>> {
+  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content:
+            "Generate 3-5 brief clinical learning pearls from this H&P note. Return JSON: {\"tidbits\":[{\"topic\":\"...\",\"body\":\"1-2 sentence pearl\"}]}. Focus on E/M documentation, diagnoses, meds, or one guideline tip.",
+        },
+        { role: "user", content: note.slice(0, 6000) },
+      ],
+      temperature: 0.3,
+      max_tokens: 800,
+      response_format: { type: "json_object" },
+    }),
+  });
+
+  if (!resp.ok) return [];
+
+  const data = await resp.json();
+  const raw = data.choices?.[0]?.message?.content?.trim();
+  if (!raw) return [];
+
+  try {
+    const parsed = JSON.parse(raw);
+    const items = Array.isArray(parsed) ? parsed : (parsed.tidbits || parsed.items || []);
+    return items.slice(0, 5).map((t: any, i: number) => ({
+      id: `tidbit_${Date.now()}_${i}`,
+      topic: String(t.topic || t.title || `Learning point ${i + 1}`),
+      body: String(t.body || t.text || t.pearl || ''),
+    })).filter((t: any) => t.body.length > 10);
+  } catch {
+    return [];
+  }
+}
+
+// ── OpenAI Vision OCR (legacy wrapper removed) ───────────────────────────────
 
 // ── Direct OpenAI Note Generation (fallback) ─────────────────────────────────
 

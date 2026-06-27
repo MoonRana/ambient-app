@@ -1,6 +1,6 @@
 import React from 'react';
 import {
-  View, Text, StyleSheet, Switch, Pressable, useColorScheme, Platform, ScrollView, Alert, Linking,
+  View, Text, StyleSheet, Switch, Pressable, useColorScheme, Platform, ScrollView, Alert, Linking, Share,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -16,6 +16,21 @@ import {
 import { useSessions } from '@/lib/session-context';
 import { useAuth } from '@/lib/auth-context';
 import { BrandMark } from '@/components/BrandLogo';
+import {
+  CREDENTIAL_OPTIONS,
+  BOARD_OPTIONS,
+  CME_DISCLAIMER,
+  type CredentialType,
+  type CmeBoard,
+} from '@/lib/cme/cme-config';
+import {
+  fetchCmeProfile,
+  upsertCmeProfile,
+  fetchCmeTotals,
+  fetchCmeActivities,
+  buildCmeCsv,
+  buildCmeCertificateText,
+} from '@/lib/cme/cme-api';
 
 function SettingRow({
   icon,
@@ -91,6 +106,51 @@ export default function SettingsTab() {
   };
 
   const [isDeleting, setIsDeleting] = React.useState(false);
+  const [cmeTotal, setCmeTotal] = React.useState(0);
+  const [cmeMonth, setCmeMonth] = React.useState(0);
+  const [cmeCredential, setCmeCredential] = React.useState<CredentialType>('md');
+  const [cmeBoards, setCmeBoards] = React.useState<CmeBoard[]>(['abim']);
+
+  React.useEffect(() => {
+    if (!user) return;
+    (async () => {
+      const [profile, totals] = await Promise.all([fetchCmeProfile(), fetchCmeTotals()]);
+      if (profile) {
+        setCmeCredential(profile.credential_type as CredentialType);
+        setCmeBoards((profile.boards || []) as CmeBoard[]);
+      }
+      setCmeTotal(totals.total);
+      setCmeMonth(totals.thisMonth);
+    })();
+  }, [user]);
+
+  const handleExportCmeCsv = async () => {
+    const activities = await fetchCmeActivities();
+    const csv = buildCmeCsv(activities);
+    await Share.share({ message: csv, title: 'DoMyNote CME Activity.csv' });
+  };
+
+  const handleExportCmeCertificate = async () => {
+    const [activities, profile] = await Promise.all([fetchCmeActivities(), fetchCmeProfile()]);
+    const text = buildCmeCertificateText(activities, profile);
+    await Share.share({ message: text, title: 'DoMyNote CME Certificate' });
+  };
+
+  const handleSaveCmeProfile = async (credential: CredentialType, boards: CmeBoard[]) => {
+    if (!user) {
+      Alert.alert('Sign in required', 'Sign in to save your CME profile.');
+      return;
+    }
+    try {
+      await upsertCmeProfile({ credential_type: credential, boards });
+      setCmeCredential(credential);
+      setCmeBoards(boards);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn('[handleSaveCmeProfile]', msg);
+      Alert.alert('Error', msg || 'Could not save CME profile');
+    }
+  };
 
   const handleDeleteAccount = () => {
     Alert.alert(
@@ -378,6 +438,105 @@ export default function SettingsTab() {
                   ],
                 );
               }}
+              colors={colors}
+            />
+          </View>
+        </View>
+
+        {/* My CME */}
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: colors.textTertiary }]}>My CME</Text>
+          <View style={[styles.sectionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <View style={[styles.settingRow, { borderBottomColor: colors.border, flexDirection: 'column', alignItems: 'flex-start', gap: 8 }]}>
+              <Text style={[styles.settingTitle, { color: colors.text }]}>
+                {cmeTotal.toFixed(2)} hr total · {cmeMonth.toFixed(2)} hr this month
+              </Text>
+              <Text style={[styles.settingSubtitle, { color: colors.textTertiary }]}>{CME_DISCLAIMER}</Text>
+            </View>
+            <View style={[styles.settingRow, { borderBottomColor: colors.border, flexDirection: 'column', alignItems: 'flex-start', gap: 12 }]}>
+              <Text style={[styles.settingTitle, { color: colors.text }]}>Credential</Text>
+              <View style={styles.themeSelector}>
+                {CREDENTIAL_OPTIONS.map((opt) => (
+                  <Pressable
+                    key={opt.id}
+                    onPress={() => {
+                      const defaultBoards: CmeBoard[] =
+                        opt.id === 'np' ? ['ancc'] : opt.id === 'pa' ? ['nccpa'] : ['abim'];
+                      handleSaveCmeProfile(opt.id, defaultBoards);
+                    }}
+                    style={[
+                      styles.themeOption,
+                      {
+                        backgroundColor: cmeCredential === opt.id ? colors.tint : colors.surfaceSecondary,
+                        borderColor: cmeCredential === opt.id ? colors.tint : colors.border,
+                        flex: 1,
+                      },
+                    ]}
+                  >
+                    <Text
+                      numberOfLines={1}
+                      style={[
+                        styles.themeOptionText,
+                        { color: cmeCredential === opt.id ? '#fff' : colors.textSecondary, fontSize: 11 },
+                      ]}
+                    >
+                      {opt.label}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+            <View style={[styles.settingRow, { borderBottomColor: colors.border, flexDirection: 'column', alignItems: 'flex-start', gap: 12 }]}>
+              <Text style={[styles.settingTitle, { color: colors.text }]}>Boards</Text>
+              <View style={styles.themeSelector}>
+                {BOARD_OPTIONS.filter((b) => b.forCredential.includes(cmeCredential)).map((opt) => {
+                  const active = cmeBoards.includes(opt.id);
+                  return (
+                    <Pressable
+                      key={opt.id}
+                      onPress={() => {
+                        const next = active
+                          ? cmeBoards.filter((b) => b !== opt.id)
+                          : [...cmeBoards, opt.id];
+                        handleSaveCmeProfile(cmeCredential, next.length ? next : [opt.id]);
+                      }}
+                      style={[
+                        styles.themeOption,
+                        {
+                          backgroundColor: active ? colors.accent : colors.surfaceSecondary,
+                          borderColor: active ? colors.accent : colors.border,
+                          flex: 1,
+                        },
+                      ]}
+                    >
+                      <Text
+                        numberOfLines={2}
+                        style={[
+                          styles.themeOptionText,
+                          { color: active ? '#fff' : colors.textSecondary, fontSize: 10 },
+                        ]}
+                      >
+                        {opt.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+            <SettingRow
+              icon="download-outline"
+              iconColor={colors.tint}
+              title="Export activity (CSV)"
+              subtitle="Share your logged CME activities"
+              onPress={handleExportCmeCsv}
+              colors={colors}
+            />
+            <SettingRow
+              icon="document-text-outline"
+              iconColor={colors.accent}
+              title="Export certificate"
+              subtitle="Self-tracked summary for your records"
+              onPress={handleExportCmeCertificate}
               colors={colors}
             />
           </View>

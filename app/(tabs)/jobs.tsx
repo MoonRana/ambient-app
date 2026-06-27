@@ -13,6 +13,7 @@ import { useEffectiveColorScheme } from '@/lib/settings-context';
 import { SCREENSHOT_DEMO } from '@/lib/screenshot-demo';
 import { useJobsStore, selectRecentJobs, selectActiveJobs, type FreestyleJob, type JobStatus } from '@/lib/stores/useJobsStore';
 import { getJobStatus } from '@/lib/api/freestyle';
+import { useAllJobsRealtime } from '@/lib/hooks/useJobRealtime';
 
 function getStatusConfig(status: JobStatus, colors: ReturnType<typeof useThemeColors>) {
   switch (status) {
@@ -244,7 +245,9 @@ export default function JobsDashboard() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [selectedJob, setSelectedJob] = useState<FreestyleJob | null>(null);
 
-  // Poll active jobs from Supabase every 3s while screen is focused
+  useAllJobsRealtime();
+
+  // Fallback poll every 15s if realtime misses an update
   const pollActiveJobs = useCallback(async () => {
     if (SCREENSHOT_DEMO) return;
     const active = selectActiveJobs(useJobsStore.getState().jobs);
@@ -259,6 +262,7 @@ export default function JobsDashboard() {
             progress: fresh.progress,
             currentStep: fresh.current_step || undefined,
             resultNote: fresh.result_note || undefined,
+            cmeTidbits: fresh.cme_tidbits ?? undefined,
             error: fresh.error || undefined,
             completedAt: fresh.completed_at ? new Date(fresh.completed_at).getTime() : undefined,
           });
@@ -272,7 +276,7 @@ export default function JobsDashboard() {
   useFocusEffect(
     useCallback(() => {
       pollActiveJobs();
-      pollRef.current = setInterval(pollActiveJobs, 3000);
+      pollRef.current = setInterval(pollActiveJobs, 15000);
       return () => {
         if (pollRef.current) clearInterval(pollRef.current);
       };

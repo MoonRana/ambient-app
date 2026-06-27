@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, Pressable, Platform, ScrollView, Alert, ActivityIndicator,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -110,14 +111,10 @@ export default function FreestyleScreen() {
     const jobId = await generate(activeWorkflowId);
     if (jobId) {
       if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      router.navigate('/(tabs)/jobs' as any);
+      router.push(`/freestyle/result/${jobId}`);
     } else {
-      // generate() sets its own error state — read it fresh
-      const freshError = useFreestyleGeneration.name; // just need to trigger re-render
-      // Show alert with whatever error we have
       setTimeout(() => {
-        const currentError = genError || 'Something went wrong. Please try again.';
-        Alert.alert('Generation Failed', currentError, [{ text: 'OK' }]);
+        Alert.alert('Generation Failed', genError || 'Something went wrong. Please try again.', [{ text: 'OK' }]);
       }, 100);
     }
   }, [activeWorkflow, activeWorkflowId, generate, genError]);
@@ -134,7 +131,11 @@ export default function FreestyleScreen() {
   if (!activeWorkflow) return null;
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
+    <KeyboardAvoidingView
+      style={[styles.container, { backgroundColor: colors.background }]}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + 8 : 0}
+    >
       <ScrollView
         contentContainerStyle={[
           styles.scroll,
@@ -321,7 +322,7 @@ export default function FreestyleScreen() {
           </Text>
         </Pressable>
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 

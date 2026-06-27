@@ -30,6 +30,7 @@ export function useJobRealtime(jobId: string | null) {
             progress: row.progress ?? 0,
             currentStep: row.current_step,
             resultNote: row.result_note,
+            cmeTidbits: row.cme_tidbits ?? undefined,
             error: row.error,
             completedAt: row.completed_at ? new Date(row.completed_at).getTime() : undefined,
           });
@@ -73,6 +74,7 @@ export function useAllJobsRealtime() {
             progress: row.progress ?? 0,
             currentStep: row.current_step,
             resultNote: row.result_note,
+            cmeTidbits: row.cme_tidbits ?? undefined,
             error: row.error,
             completedAt: row.completed_at ? new Date(row.completed_at).getTime() : undefined,
           });

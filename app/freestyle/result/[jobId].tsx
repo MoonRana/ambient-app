@@ -15,6 +15,7 @@ import { useJobRealtime } from '@/lib/hooks/useJobRealtime';
 import { getJobStatus } from '@/lib/api/freestyle';
 import JobProgressCard from '@/components/freestyle/JobProgressCard';
 import NoteChatDrawer from '@/components/freestyle/NoteChatDrawer';
+import CmeTidbitsPanel from '@/components/cme/CmeTidbitsPanel';
 
 // ── SOAP Section Card (reused pattern from review.tsx) ───────────────────────
 
@@ -117,7 +118,10 @@ export default function FreestyleResultScreen() {
       setNote(localJob.resultNote);
       setLoading(false);
     }
-  }, [localJob?.resultNote]);
+    if (localJob?.status === 'complete' || localJob?.status === 'failed') {
+      setLoading(false);
+    }
+  }, [localJob?.resultNote, localJob?.status]);
 
   // Fetch from server if we don't have the result locally
   useEffect(() => {
@@ -137,6 +141,7 @@ export default function FreestyleResultScreen() {
           status: data.status as any,
           progress: data.progress,
           resultNote: data.result_note,
+          cmeTidbits: data.cme_tidbits ?? undefined,
           error: data.error || undefined,
           completedAt: data.completed_at ? new Date(data.completed_at).getTime() : undefined,
         });
@@ -225,6 +230,10 @@ export default function FreestyleResultScreen() {
         {/* Job progress card for active jobs */}
         {isActive && localJob && (
           <JobProgressCard job={localJob} />
+        )}
+
+        {isComplete && localJob?.cmeTidbits && localJob.cmeTidbits.length > 0 && jobId && (
+          <CmeTidbitsPanel jobId={jobId} tidbits={localJob.cmeTidbits} />
         )}
 
         {loading && !isActive && (

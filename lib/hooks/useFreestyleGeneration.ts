@@ -4,10 +4,13 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth-context';
-import { useFreestyleStore, type FreestyleWorkflow } from '@/lib/stores/useFreestyleStore';
+import { useFreestyleStore } from '@/lib/stores/useFreestyleStore';
 import { useJobsStore, type FreestyleJob } from '@/lib/stores/useJobsStore';
 import { generateFreestyle } from '@/lib/api/freestyle';
 import { ensureAIConsent } from '@/lib/ai-consent';
+
+const IMAGE_MAX_WIDTH = 1200;
+const IMAGE_COMPRESS = 0.65;
 
 interface UseFreestyleGenerationReturn {
   generate: (workflowId: string) => Promise<string | null>;
@@ -16,14 +19,50 @@ interface UseFreestyleGenerationReturn {
   error: string | null;
 }
 
-/**
- * Hook to handle the full generation flow:
- * 1. Upload documents/recordings to Supabase Storage (if any)
- * 2. Call freestyle-generate edge function
- * 3. Create a job entry in the local jobs store
- *
- * Works with ANY combination of inputs — even notes-only.
- */
+function decode(base64: string): Uint8Array {
+  const binaryString = atob(base64);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
+
+async function readDocBase64(
+  uri: string,
+  type: 'pdf' | 'image',
+): Promise<string> {
+  if (Platform.OS === 'web') {
+    const resp = await fetch(uri);
+    const blob = await resp.blob();
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }
+  if (type === 'image') {
+    try {
+      const manipulated = await ImageManipulator.manipulateAsync(
+        uri,
+        [{ resize: { width: IMAGE_MAX_WIDTH } }],
+        { compress: IMAGE_COMPRESS, format: ImageManipulator.SaveFormat.JPEG },
+      );
+      return FileSystem.readAsStringAsync(manipulated.uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+    } catch {
+      return FileSystem.readAsStringAsync(uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+    }
+  }
+  return FileSystem.readAsStringAsync(uri, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+}
+
 export function useFreestyleGeneration(): UseFreestyleGenerationReturn {
   const { user } = useAuth();
   const [isUploading, setIsUploading] = useState(false);
@@ -53,128 +92,110 @@ export function useFreestyleGeneration(): UseFreestyleGenerationReturn {
     setSyncStatus(workflowId, 'syncing');
 
     try {
-      // Count total upload items for progress
       const readyRecordings = workflow.recordings.filter(
         (r) => r.uri && r.state !== 'idle',
       );
       const totalItems = workflow.documents.length + readyRecordings.length;
       let completedItems = 0;
 
-      const updateProgress = () => {
+      const bumpProgress = () => {
         completedItems++;
         if (totalItems > 0) {
-          setUploadProgress((completedItems / totalItems) * 90); // reserve 10% for API call
+          setUploadProgress((completedItems / totalItems) * 90);
         }
       };
 
-      // 1. Upload documents to Supabase Storage (skip if none)
-      const uploadedDocs = [];
-      for (const doc of workflow.documents) {
-        try {
-          let fileBase64: string;
-          if (Platform.OS === 'web') {
-            const resp = await fetch(doc.uri);
-            const blob = await resp.blob();
-            fileBase64 = await new Promise<string>((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
-              reader.onerror = reject;
-              reader.readAsDataURL(blob);
-            });
-          } else {
-            if (doc.type === 'image') {
-              try {
-                const manipulated = await ImageManipulator.manipulateAsync(
-                  doc.uri,
-                  [{ resize: { width: 2048 } }],
-                  { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG },
-                );
-                fileBase64 = await FileSystem.readAsStringAsync(manipulated.uri, {
-                  encoding: FileSystem.EncodingType.Base64,
-                });
-              } catch {
-                fileBase64 = await FileSystem.readAsStringAsync(doc.uri, {
-                  encoding: FileSystem.EncodingType.Base64,
-                });
-              }
-            } else {
-              fileBase64 = await FileSystem.readAsStringAsync(doc.uri, {
-                encoding: FileSystem.EncodingType.Base64,
+      const docResults = await Promise.all(
+        workflow.documents.map(async (doc) => {
+          try {
+            const fileBase64 = await readDocBase64(doc.uri, doc.type);
+            const storagePath = `freestyle/${user.id}/${workflowId}/docs/${doc.id}.${doc.type === 'image' ? 'jpg' : 'pdf'}`;
+            const { error: uploadError } = await supabase.storage
+              .from('freestyle-documents')
+              .upload(storagePath, decode(fileBase64), {
+                contentType: doc.type === 'image' ? 'image/jpeg' : 'application/pdf',
+                upsert: true,
               });
+
+            if (uploadError) {
+              console.warn(`Doc upload failed: ${uploadError.message}`);
+              return null;
             }
-          }
-
-          const storagePath = `freestyle/${user.id}/${workflowId}/docs/${doc.id}.${doc.type === 'image' ? 'jpg' : 'pdf'}`;
-          const { error: uploadError } = await supabase.storage
-            .from('freestyle-documents')
-            .upload(storagePath, decode(fileBase64), {
-              contentType: doc.type === 'image' ? 'image/jpeg' : 'application/pdf',
-              upsert: true,
-            });
-
-          if (uploadError) {
-            console.warn(`Doc upload failed: ${uploadError.message}`);
-            // Still add to payload with empty path — edge function will skip it
-          } else {
-            uploadedDocs.push({
+            return {
               storage_path: storagePath,
               type: doc.type,
               name: doc.name,
-            });
+              label: doc.label,
+            };
+          } catch (e: any) {
+            console.warn(`Failed to upload doc ${doc.name}:`, e?.message);
+            return null;
+          } finally {
+            bumpProgress();
           }
-        } catch (e: any) {
-          console.warn(`Failed to upload doc ${doc.name}:`, e?.message);
-        }
-        updateProgress();
-      }
+        }),
+      );
 
-      // 2. Upload recordings (skip if none)
-      const uploadedRecordings = [];
-      for (const rec of readyRecordings) {
-        try {
-          let audioBase64: string;
-          if (Platform.OS === 'web') {
-            const resp = await fetch(rec.uri!);
-            const blob = await resp.blob();
-            audioBase64 = await new Promise<string>((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
-              reader.onerror = reject;
-              reader.readAsDataURL(blob);
-            });
-          } else {
-            audioBase64 = await FileSystem.readAsStringAsync(rec.uri!, {
-              encoding: FileSystem.EncodingType.Base64,
-            });
-          }
+      const recResults = await Promise.all(
+        readyRecordings.map(async (rec) => {
+          try {
+            let audioBase64: string;
+            if (Platform.OS === 'web') {
+              const resp = await fetch(rec.uri!);
+              const blob = await resp.blob();
+              audioBase64 = await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+              });
+            } else {
+              audioBase64 = await FileSystem.readAsStringAsync(rec.uri!, {
+                encoding: FileSystem.EncodingType.Base64,
+              });
+            }
 
-          const ext = rec.uri!.includes('.webm') ? 'webm' : 'm4a';
-          const storagePath = `freestyle/${user.id}/${workflowId}/audio/${rec.id}.${ext}`;
-          const { error: uploadError } = await supabase.storage
-            .from('freestyle-recordings')
-            .upload(storagePath, decode(audioBase64), {
-              contentType: ext === 'webm' ? 'audio/webm' : 'audio/m4a',
-              upsert: true,
-            });
+            const ext = rec.uri!.includes('.webm') ? 'webm' : 'm4a';
+            const storagePath = `freestyle/${user.id}/${workflowId}/audio/${rec.id}.${ext}`;
+            const { error: uploadError } = await supabase.storage
+              .from('freestyle-recordings')
+              .upload(storagePath, decode(audioBase64), {
+                contentType: ext === 'webm' ? 'audio/webm' : 'audio/m4a',
+                upsert: true,
+              });
 
-          if (uploadError) {
-            console.warn(`Audio upload failed: ${uploadError.message}`);
-          } else {
-            uploadedRecordings.push({
+            if (uploadError) {
+              console.warn(`Audio upload failed: ${uploadError.message}`);
+              return null;
+            }
+            return {
               storage_path: storagePath,
               transcript: rec.transcript,
               duration_s: rec.duration,
-            });
+            };
+          } catch (e: any) {
+            console.warn(`Failed to upload recording ${rec.id}:`, e?.message);
+            return null;
+          } finally {
+            bumpProgress();
           }
-        } catch (e: any) {
-          console.warn(`Failed to upload recording ${rec.id}:`, e?.message);
-        }
-        updateProgress();
-      }
+        }),
+      );
+
+      const uploadedDocs = docResults.filter(Boolean) as Array<{
+        storage_path: string;
+        type: 'pdf' | 'image';
+        name: string;
+        label?: string;
+      }>;
+      const uploadedRecordings = recResults.filter(Boolean) as Array<{
+        storage_path: string;
+        transcript?: string;
+        duration_s: number;
+      }>;
 
       setUploadProgress(95);
 
-      // 3. Call freestyle-generate — works with any combination of inputs
       const result = await generateFreestyle({
         patient_id: workflow.patientId,
         documents: uploadedDocs,
@@ -190,12 +211,10 @@ export function useFreestyleGeneration(): UseFreestyleGenerationReturn {
       });
 
       setUploadProgress(100);
-
-      // 4. Store job reference
       setJobId(workflowId, result.job_id);
       setSyncStatus(workflowId, 'synced');
 
-      const job: FreestyleJob = {
+      addJob({
         id: result.job_id,
         workflowId,
         patientId: workflow.patientId || undefined,
@@ -203,8 +222,7 @@ export function useFreestyleGeneration(): UseFreestyleGenerationReturn {
         status: 'queued',
         progress: 0,
         createdAt: Date.now(),
-      };
-      addJob(job);
+      });
 
       return result.job_id;
     } catch (e: any) {
@@ -215,17 +233,7 @@ export function useFreestyleGeneration(): UseFreestyleGenerationReturn {
     } finally {
       setIsUploading(false);
     }
-  }, [user]);
+  }, [user, setJobId, setSyncStatus, addJob]);
 
   return { generate, isUploading, uploadProgress, error };
-}
-
-// Base64 decode helper
-function decode(base64: string): Uint8Array {
-  const binaryString = atob(base64);
-  const bytes = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  return bytes;
 }

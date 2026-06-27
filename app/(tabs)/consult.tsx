@@ -17,6 +17,7 @@ import { useThemeColors } from '@/constants/colors';
 import { useEffectiveColorScheme } from '@/lib/settings-context';
 import { ConsultProvider, useConsult, ConsultMessage, type ConsultExtractPhase } from '@/lib/consult-context';
 import { ConsultSource, ConsultMetrics } from '@/lib/supabase-api';
+import CmeClaimChip from '@/components/cme/CmeClaimChip';
 
 // ─── Extract progress copy ────────────────────────────────────────────────────
 
@@ -181,14 +182,20 @@ function SourcesAccordion({
 // ─── Message bubble ───────────────────────────────────────────────────────────
 
 function MessageBubble({
-    message, colors, onRetry,
+    message, colors, onRetry, userQuestion,
 }: {
     message: ConsultMessage;
     colors: ReturnType<typeof useThemeColors>;
     onRetry?: () => void;
+    userQuestion?: string;
 }) {
     const isUser = message.role === 'user';
     const isEmpty = !message.content && message.streaming;
+    const sourceCount = message.metadata
+        ? (message.metadata.guidelines?.length ?? 0)
+            + (message.metadata.webSources?.length ?? 0)
+            + (message.metadata.pubmedSources?.length ?? 0)
+        : 0;
 
     const markdownStyles = {
         body: { color: colors.text, fontFamily: 'Inter_400Regular', fontSize: 15, lineHeight: 22 },
@@ -291,7 +298,14 @@ function MessageBubble({
 
                     {/* Typing dots while waiting for first token */}
                     {isEmpty && !message.error && (
-                        <TypingDots color={colors.textTertiary} />
+                        <View style={styles.typingStatus}>
+                            <Text style={[styles.typingStatusText, { color: colors.textSecondary }]}>
+                                {sourceCount > 0
+                                    ? `Drafting answer from ${sourceCount} source${sourceCount === 1 ? '' : 's'}…`
+                                    : 'Searching guidelines & literature…'}
+                            </Text>
+                            <TypingDots color={colors.textTertiary} />
+                        </View>
                     )}
 
                     {/* Streaming / settled content */}
@@ -320,6 +334,10 @@ function MessageBubble({
                         pubmedSources={message.metadata.pubmedSources}
                         colors={colors}
                     />
+                )}
+
+                {!message.streaming && !message.error && !message.stopped && (
+                    <CmeClaimChip message={message} userQuestion={userQuestion} />
                 )}
             </View>
         </Animated.View>
@@ -370,6 +388,7 @@ function ConsultScreen() {
         specialtiesLoading,
         setSelectedSpecialty,
         sendQuestion,
+        stopStreaming,
         newCase,
         attachedDocument,
         isExtracting,
@@ -421,8 +440,8 @@ function ConsultScreen() {
     }, [isStreaming]);
 
     const handleScrollBeginDrag = useCallback(() => {
-        // User intentionally scrolled
         userScrolledRef.current = true;
+        Keyboard.dismiss();
     }, []);
 
     const handleScrollEndDrag = useCallback(() => {
@@ -432,6 +451,13 @@ function ConsultScreen() {
             setShowScrollToBottom(false);
         }
     }, []);
+
+    const handleStop = useCallback(() => {
+        if (Platform.OS !== 'web') {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+        }
+        stopStreaming();
+    }, [stopStreaming]);
 
     const handleSend = useCallback(() => {
         const text = input.trim();
@@ -476,7 +502,7 @@ function ConsultScreen() {
         <KeyboardAvoidingView
             style={[styles.container, { backgroundColor: colors.background }]}
             behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + 100 : 20}
         >
             {/* ── Header ── */}
             <View style={[
@@ -498,7 +524,18 @@ function ConsultScreen() {
                         </Text>
                     </View>
                 </View>
-                {messages.length > 0 && (
+                {isStreaming ? (
+                    <Pressable
+                        onPress={handleStop}
+                        style={({ pressed }) => [
+                            styles.stopHeaderBtn,
+                            { backgroundColor: colors.recording, opacity: pressed ? 0.85 : 1 },
+                        ]}
+                    >
+                        <Ionicons name="stop" size={14} color="#fff" />
+                        <Text style={styles.stopHeaderBtnText}>Stop</Text>
+                    </Pressable>
+                ) : messages.length > 0 ? (
                     <Pressable
                         onPress={handleNewCase}
                         style={({ pressed }) => [
@@ -509,7 +546,7 @@ function ConsultScreen() {
                         <Ionicons name="add" size={14} color={colors.tint} />
                         <Text style={[styles.newCaseBtnText, { color: colors.tint }]}>New Case</Text>
                     </Pressable>
-                )}
+                ) : null}
             </View>
 
             {/* ── Specialty picker ── */}
@@ -597,10 +634,17 @@ function ConsultScreen() {
                     ref={listRef}
                     data={messages}
                     keyExtractor={m => m.id}
+                    keyboardDismissMode="interactive"
+                    keyboardShouldPersistTaps="handled"
                     renderItem={({ item, index }) => (
                         <MessageBubble
                             message={item}
                             colors={colors}
+                            userQuestion={
+                                index > 0 && messages[index - 1]?.role === 'user'
+                                    ? messages[index - 1].content
+                                    : undefined
+                            }
                             onRetry={() => {
                                 if (index > 0) {
                                     const prev = messages[index - 1];
@@ -691,6 +735,25 @@ function ConsultScreen() {
                     </View>
                 )}
 
+                {isStreaming && (
+                    <View style={[styles.streamingBar, { backgroundColor: `${colors.tint}12` }]}>
+                        <ActivityIndicator size="small" color={colors.tint} />
+                        <Text style={[styles.streamingBarText, { color: colors.textSecondary }]}>
+                            Generating response…
+                        </Text>
+                        <Pressable
+                            onPress={handleStop}
+                            style={({ pressed }) => [
+                                styles.streamingStopBtn,
+                                { borderColor: colors.recording, opacity: pressed ? 0.75 : 1 },
+                            ]}
+                        >
+                            <Ionicons name="stop" size={14} color={colors.recording} />
+                            <Text style={[styles.streamingStopText, { color: colors.recording }]}>Stop</Text>
+                        </Pressable>
+                    </View>
+                )}
+
                 <View style={[styles.inputWrapper, { backgroundColor: colors.surface, borderColor: colors.border }]}>
                     {/* Camera button */}
                     <Pressable
@@ -722,19 +785,23 @@ function ConsultScreen() {
                         blurOnSubmit={false}
                     />
                     <Pressable
-                        onPress={handleSend}
-                        disabled={!input.trim() || isStreaming}
+                        onPress={isStreaming ? handleStop : handleSend}
+                        disabled={!isStreaming && !input.trim()}
                         style={({ pressed }) => [
                             styles.sendBtn,
                             {
-                                backgroundColor: input.trim() && !isStreaming
-                                    ? colors.tint
-                                    : colors.surfaceSecondary,
+                                backgroundColor: isStreaming
+                                    ? colors.recording
+                                    : input.trim()
+                                        ? colors.tint
+                                        : colors.surfaceSecondary,
                                 opacity: pressed ? 0.8 : 1,
                             },
                         ]}
                     >
-                        {isStreaming || (isExtracting && extractPhase === 'waiting') ? (
+                        {isStreaming ? (
+                            <Ionicons name="stop" size={18} color="#fff" />
+                        ) : (isExtracting && extractPhase === 'waiting') ? (
                             <ActivityIndicator size="small" color={colors.textTertiary} />
                         ) : (
                             <Ionicons
@@ -790,6 +857,12 @@ const styles = StyleSheet.create({
         borderRadius: 20, borderWidth: 1,
     },
     newCaseBtnText: { fontSize: 13, fontFamily: 'Inter_500Medium' },
+    stopHeaderBtn: {
+        flexDirection: 'row', alignItems: 'center', gap: 5,
+        paddingHorizontal: 12, paddingVertical: 6,
+        borderRadius: 20,
+    },
+    stopHeaderBtnText: { fontSize: 13, fontFamily: 'Inter_600SemiBold', color: '#fff' },
 
     // Specialty picker
     specialtyBar: { borderBottomWidth: StyleSheet.hairlineWidth, paddingVertical: 10 },
@@ -837,6 +910,8 @@ const styles = StyleSheet.create({
     metricsText: { fontSize: 11, fontFamily: 'Inter_400Regular', textAlign: 'right', marginTop: 4 },
 
     // Typing dots
+    typingStatus: { gap: 8 },
+    typingStatusText: { fontSize: 13, fontFamily: 'Inter_400Regular' },
     dotsRow: { flexDirection: 'row', gap: 5, paddingVertical: 4, paddingHorizontal: 2 },
     dot: { width: 8, height: 8, borderRadius: 4 },
 
@@ -898,6 +973,33 @@ const styles = StyleSheet.create({
         borderRadius: 22, borderWidth: 1,
         paddingLeft: 16, paddingRight: 6, paddingVertical: 6,
         gap: 8, minHeight: 48,
+    },
+    streamingBar: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 8,
+        borderRadius: 12,
+        marginBottom: 6,
+    },
+    streamingBarText: {
+        flex: 1,
+        fontSize: 13,
+        fontFamily: 'Inter_500Medium',
+    },
+    streamingStopBtn: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 4,
+        paddingHorizontal: 10,
+        paddingVertical: 5,
+        borderRadius: 16,
+        borderWidth: 1,
+    },
+    streamingStopText: {
+        fontSize: 12,
+        fontFamily: 'Inter_600SemiBold',
     },
     textInput: {
         flex: 1, fontSize: 15, fontFamily: 'Inter_400Regular',

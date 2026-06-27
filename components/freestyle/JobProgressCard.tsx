@@ -12,10 +12,10 @@ interface Props {
 
 const STEP_LABELS: Record<string, string> = {
   queued: 'Waiting in queue...',
-  extracting: 'Extracting documents...',
-  retrieving: 'Searching clinical guidelines...',
+  extracting: 'Processing documents and audio...',
+  retrieving: 'Processing inputs...',
   generating: 'Generating H&P note...',
-  finalizing: 'Finalizing and saving...',
+  finalizing: 'Finalizing note...',
   complete: 'Note ready!',
   failed: 'Generation failed',
 };

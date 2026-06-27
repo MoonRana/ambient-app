@@ -41,6 +41,7 @@ export interface FreestyleGenerateRequest {
     storage_path: string;
     type: 'pdf' | 'image';
     name: string;
+    label?: string;
   }>;
   recordings: Array<{
     storage_path: string;
@@ -71,6 +72,7 @@ export interface FreestyleJobRow {
   current_step: string | null;
   inputs: any;
   result_note: string | null;
+  cme_tidbits?: Array<{ id: string; topic: string; body: string }> | null;
   error: string | null;
   created_at: string;
   completed_at: string | null;

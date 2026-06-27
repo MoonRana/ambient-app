@@ -14,6 +14,7 @@ import {
 import { Alert } from 'react-native';
 import { ensureAIConsent } from './ai-consent';
 import { isNoteGenerationRequest, routeToFreestyleWithDocument } from './consult-routing';
+import { supabase } from './supabase';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -22,6 +23,7 @@ export interface ConsultMessage {
     role: 'user' | 'assistant';
     content: string;
     streaming?: boolean;
+    stopped?: boolean;
     metadata?: {
         guidelines: ConsultSource[];
         webSources: ConsultSource[];
@@ -42,6 +44,7 @@ interface ConsultContextValue {
     specialtiesLoading: boolean;
     setSelectedSpecialty: (id: string | null) => void;
     sendQuestion: (text: string) => void;
+    stopStreaming: () => void;
     newCase: () => void;
     attachedDocument: string | null;
     isExtracting: boolean;
@@ -63,6 +66,8 @@ const CONSULT_EXTRACT_OPTS = {
     timeout: 90_000,
 };
 
+const CONSULT_STREAM_TIMEOUT_MS = 120_000;
+
 export function ConsultProvider({ children }: { children: ReactNode }) {
     const [messages, setMessages] = useState<ConsultMessage[]>([]);
     const [isStreaming, setIsStreaming] = useState(false);
@@ -71,7 +76,42 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
     const [specialtiesLoading, setSpecialtiesLoading] = useState(true);
 
     const abortRef = useRef<AbortController | null>(null);
+    const streamTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const historyRef = useRef<Array<{ role: 'user' | 'assistant'; content: string }>>([]);
+
+    const clearStreamTimeout = useCallback(() => {
+        if (streamTimeoutRef.current) {
+            clearTimeout(streamTimeoutRef.current);
+            streamTimeoutRef.current = null;
+        }
+    }, []);
+
+    const finalizeStreamingMessage = useCallback((
+        updater: (message: ConsultMessage) => ConsultMessage,
+    ) => {
+        clearStreamTimeout();
+        abortRef.current = null;
+        setIsStreaming(false);
+        setMessages(prev => {
+            const updated = prev.map(m => (m.streaming ? updater(m) : m));
+            const settled = updated
+                .filter(m => !m.streaming && m.content && !m.error && !m.stopped)
+                .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+            historyRef.current = settled;
+            return updated;
+        });
+    }, [clearStreamTimeout]);
+
+    const stopStreaming = useCallback(() => {
+        if (!abortRef.current && !isStreaming) return;
+        abortRef.current?.abort();
+        finalizeStreamingMessage((m) => ({
+            ...m,
+            streaming: false,
+            stopped: true,
+            content: m.content.trim() || '_Response stopped._',
+        }));
+    }, [finalizeStreamingMessage, isStreaming]);
 
     const [attachedDocument, setAttachedDocument] = useState<string | null>(null);
     const [isExtracting, setIsExtracting] = useState(false);
@@ -84,6 +124,7 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
     }, [attachedDocument]);
 
     useEffect(() => {
+        void supabase.auth.getSession();
         fetchSpecialties()
             .then(data => {
                 setSpecialties(data || []);
@@ -95,11 +136,13 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
                 setSpecialtiesLoading(false);
             });
         return () => {
+            clearStreamTimeout();
             abortRef.current?.abort();
         };
-    }, []);
+    }, [clearStreamTimeout]);
 
     const newCase = useCallback(() => {
+        clearStreamTimeout();
         abortRef.current?.abort();
         abortRef.current = null;
         historyRef.current = [];
@@ -107,7 +150,7 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
         setIsStreaming(false);
         setAttachedDocument(null);
         attachedDocumentRef.current = null;
-    }, []);
+    }, [clearStreamTimeout]);
 
     const runExtraction = useCallback(async (imageUri: string) => {
         setIsExtracting(true);
@@ -148,7 +191,7 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
     const clearDocument = useCallback(() => {
         setAttachedDocument(null);
         attachedDocumentRef.current = null;
-    }, []);
+    }, [clearStreamTimeout]);
 
     const openFreestyle = useCallback(() => {
         routeToFreestyleWithDocument(attachedDocumentRef.current);
@@ -175,7 +218,10 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
     }, []);
 
     const proceedWithQuestion = useCallback(async (text: string) => {
-        const doc = await resolveAttachedDocument();
+        const [doc] = await Promise.all([
+            resolveAttachedDocument(),
+            supabase.auth.getSession(),
+        ]);
         const userMsg: ConsultMessage = { id: uid(), role: 'user', content: text.trim() };
 
         let enrichedQuestion = text.trim();
@@ -223,6 +269,8 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
                     ));
                 },
                 onDone(doneMetrics) {
+                    clearStreamTimeout();
+                    abortRef.current = null;
                     setMessages(prev => {
                         const updated = prev.map(m =>
                             m.id === assistantId
@@ -230,7 +278,7 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
                                 : m,
                         );
                         const settled = updated
-                            .filter(m => !m.streaming)
+                            .filter(m => !m.streaming && m.content && !m.error && !m.stopped)
                             .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }));
                         historyRef.current = settled;
                         return updated;
@@ -238,6 +286,8 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
                     setIsStreaming(false);
                 },
                 onError(err) {
+                    clearStreamTimeout();
+                    abortRef.current = null;
                     setMessages(prev => prev.map(m =>
                         m.id === assistantId
                             ? { ...m, streaming: false, error: err.message || 'Something went wrong.' }
@@ -249,9 +299,25 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
         );
 
         abortRef.current = controller;
+        streamTimeoutRef.current = setTimeout(() => {
+            if (!abortRef.current) return;
+            abortRef.current.abort();
+            setMessages(prev => prev.map(m =>
+                m.id === assistantId
+                    ? {
+                        ...m,
+                        streaming: false,
+                        error: 'Request timed out. Tap Retry or try a shorter question.',
+                    }
+                    : m,
+            ));
+            abortRef.current = null;
+            clearStreamTimeout();
+            setIsStreaming(false);
+        }, CONSULT_STREAM_TIMEOUT_MS);
         setAttachedDocument(null);
         attachedDocumentRef.current = null;
-    }, [selectedSpecialty, resolveAttachedDocument]);
+    }, [selectedSpecialty, resolveAttachedDocument, clearStreamTimeout, finalizeStreamingMessage]);
 
     const sendQuestion = useCallback(async (text: string) => {
         if (isStreaming || !text.trim()) return;
@@ -289,6 +355,7 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
         specialtiesLoading,
         setSelectedSpecialty,
         sendQuestion,
+        stopStreaming,
         newCase,
         attachedDocument,
         isExtracting,
@@ -298,7 +365,7 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
         openFreestyle,
     }), [
         messages, isStreaming, selectedSpecialty, specialties, specialtiesLoading,
-        sendQuestion, newCase, attachedDocument, isExtracting, extractPhase,
+        sendQuestion, stopStreaming, newCase, attachedDocument, isExtracting, extractPhase,
         attachDocument, clearDocument, openFreestyle,
     ]);
 
