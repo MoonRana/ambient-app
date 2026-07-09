@@ -61,9 +61,9 @@ function uid() {
 }
 
 const CONSULT_EXTRACT_OPTS = {
-    maxWidth: 900,
-    compress: 0.55,
-    timeout: 90_000,
+    maxWidth: 800,
+    compress: 0.5,
+    timeout: 60_000,
 };
 
 const CONSULT_STREAM_TIMEOUT_MS = 120_000;
@@ -191,7 +191,7 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
     const clearDocument = useCallback(() => {
         setAttachedDocument(null);
         attachedDocumentRef.current = null;
-    }, [clearStreamTimeout]);
+    }, []);
 
     const openFreestyle = useCallback(() => {
         routeToFreestyleWithDocument(attachedDocumentRef.current);
@@ -245,7 +245,38 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
         const history = [
             ...historyRef.current,
             { role: 'user' as const, content: text.trim() },
-        ];
+        ].slice(-8);
+
+        // Batch token updates (~30fps) to avoid re-rendering the whole list per chunk
+        let tokenBuffer = '';
+        let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+        const flushTokens = () => {
+            if (!tokenBuffer) return;
+            const chunk = tokenBuffer;
+            tokenBuffer = '';
+            setMessages(prev => prev.map(m =>
+                m.id === assistantId
+                    ? { ...m, content: m.content + chunk }
+                    : m,
+            ));
+        };
+
+        const scheduleFlush = () => {
+            if (flushTimer) return;
+            flushTimer = setTimeout(() => {
+                flushTimer = null;
+                flushTokens();
+            }, 32);
+        };
+
+        const drainTokens = () => {
+            if (flushTimer) {
+                clearTimeout(flushTimer);
+                flushTimer = null;
+            }
+            flushTokens();
+        };
 
         const controller = streamClinicalQA(
             {
@@ -262,13 +293,11 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
                     ));
                 },
                 onToken(chunk) {
-                    setMessages(prev => prev.map(m =>
-                        m.id === assistantId
-                            ? { ...m, content: m.content + chunk }
-                            : m,
-                    ));
+                    tokenBuffer += chunk;
+                    scheduleFlush();
                 },
                 onDone(doneMetrics) {
+                    drainTokens();
                     clearStreamTimeout();
                     abortRef.current = null;
                     setMessages(prev => {
@@ -286,6 +315,7 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
                     setIsStreaming(false);
                 },
                 onError(err) {
+                    drainTokens();
                     clearStreamTimeout();
                     abortRef.current = null;
                     setMessages(prev => prev.map(m =>

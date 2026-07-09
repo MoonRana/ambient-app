@@ -9,8 +9,8 @@ import { useJobsStore, type FreestyleJob } from '@/lib/stores/useJobsStore';
 import { generateFreestyle } from '@/lib/api/freestyle';
 import { ensureAIConsent } from '@/lib/ai-consent';
 
-const IMAGE_MAX_WIDTH = 1200;
-const IMAGE_COMPRESS = 0.65;
+const IMAGE_MAX_WIDTH = 1000;
+const IMAGE_COMPRESS = 0.6;
 
 interface UseFreestyleGenerationReturn {
   generate: (workflowId: string) => Promise<string | null>;
@@ -105,82 +105,83 @@ export function useFreestyleGeneration(): UseFreestyleGenerationReturn {
         }
       };
 
-      const docResults = await Promise.all(
-        workflow.documents.map(async (doc) => {
-          try {
-            const fileBase64 = await readDocBase64(doc.uri, doc.type);
-            const storagePath = `freestyle/${user.id}/${workflowId}/docs/${doc.id}.${doc.type === 'image' ? 'jpg' : 'pdf'}`;
-            const { error: uploadError } = await supabase.storage
-              .from('freestyle-documents')
-              .upload(storagePath, decode(fileBase64), {
-                contentType: doc.type === 'image' ? 'image/jpeg' : 'application/pdf',
-                upsert: true,
-              });
+      const [docResults, recResults] = await Promise.all([
+        Promise.all(
+          workflow.documents.map(async (doc) => {
+            try {
+              const fileBase64 = await readDocBase64(doc.uri, doc.type);
+              const storagePath = `freestyle/${user.id}/${workflowId}/docs/${doc.id}.${doc.type === 'image' ? 'jpg' : 'pdf'}`;
+              const { error: uploadError } = await supabase.storage
+                .from('freestyle-documents')
+                .upload(storagePath, decode(fileBase64), {
+                  contentType: doc.type === 'image' ? 'image/jpeg' : 'application/pdf',
+                  upsert: true,
+                });
 
-            if (uploadError) {
-              console.warn(`Doc upload failed: ${uploadError.message}`);
+              if (uploadError) {
+                console.warn(`Doc upload failed: ${uploadError.message}`);
+                return null;
+              }
+              return {
+                storage_path: storagePath,
+                type: doc.type,
+                name: doc.name,
+                label: doc.label,
+              };
+            } catch (e: any) {
+              console.warn(`Failed to upload doc ${doc.name}:`, e?.message);
               return null;
+            } finally {
+              bumpProgress();
             }
-            return {
-              storage_path: storagePath,
-              type: doc.type,
-              name: doc.name,
-              label: doc.label,
-            };
-          } catch (e: any) {
-            console.warn(`Failed to upload doc ${doc.name}:`, e?.message);
-            return null;
-          } finally {
-            bumpProgress();
-          }
-        }),
-      );
+          }),
+        ),
+        Promise.all(
+          readyRecordings.map(async (rec) => {
+            try {
+              let audioBase64: string;
+              if (Platform.OS === 'web') {
+                const resp = await fetch(rec.uri!);
+                const blob = await resp.blob();
+                audioBase64 = await new Promise<string>((resolve, reject) => {
+                  const reader = new FileReader();
+                  reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
+                  reader.onerror = reject;
+                  reader.readAsDataURL(blob);
+                });
+              } else {
+                audioBase64 = await FileSystem.readAsStringAsync(rec.uri!, {
+                  encoding: FileSystem.EncodingType.Base64,
+                });
+              }
 
-      const recResults = await Promise.all(
-        readyRecordings.map(async (rec) => {
-          try {
-            let audioBase64: string;
-            if (Platform.OS === 'web') {
-              const resp = await fetch(rec.uri!);
-              const blob = await resp.blob();
-              audioBase64 = await new Promise<string>((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
-                reader.onerror = reject;
-                reader.readAsDataURL(blob);
-              });
-            } else {
-              audioBase64 = await FileSystem.readAsStringAsync(rec.uri!, {
-                encoding: FileSystem.EncodingType.Base64,
-              });
-            }
+              const ext = rec.uri!.includes('.webm') ? 'webm' : 'm4a';
+              const storagePath = `freestyle/${user.id}/${workflowId}/audio/${rec.id}.${ext}`;
+              const { error: uploadError } = await supabase.storage
+                .from('freestyle-recordings')
+                .upload(storagePath, decode(audioBase64), {
+                  contentType: ext === 'webm' ? 'audio/webm' : 'audio/m4a',
+                  upsert: true,
+                });
 
-            const ext = rec.uri!.includes('.webm') ? 'webm' : 'm4a';
-            const storagePath = `freestyle/${user.id}/${workflowId}/audio/${rec.id}.${ext}`;
-            const { error: uploadError } = await supabase.storage
-              .from('freestyle-recordings')
-              .upload(storagePath, decode(audioBase64), {
-                contentType: ext === 'webm' ? 'audio/webm' : 'audio/m4a',
-                upsert: true,
-              });
-
-            if (uploadError) {
-              console.warn(`Audio upload failed: ${uploadError.message}`);
+              if (uploadError) {
+                console.warn(`Audio upload failed: ${uploadError.message}`);
+                return null;
+              }
+              return {
+                storage_path: storagePath,
+                transcript: rec.transcript,
+                duration_s: rec.duration,
+              };
+            } catch (e: any) {
+              console.warn(`Failed to upload recording ${rec.id}:`, e?.message);
               return null;
+            } finally {
+              bumpProgress();
             }
-            return {
-              storage_path: storagePath,
-              transcript: rec.transcript,
-              duration_s: rec.duration,
-            };
-          } catch (e: any) {
-            console.warn(`Failed to upload recording ${rec.id}:`, e?.message);
-            return null;
-          } finally {
-            bumpProgress();
-          }
-        }),
-      );
+          }),
+        ),
+      ]);
 
       const uploadedDocs = docResults.filter(Boolean) as Array<{
         storage_path: string;

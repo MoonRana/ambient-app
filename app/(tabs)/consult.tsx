@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useMemo, memo } from 'react';
 import {
     View, Text, StyleSheet, Pressable, Platform,
     ScrollView, TextInput, FlatList, Linking, Alert,
@@ -181,23 +181,8 @@ function SourcesAccordion({
 
 // ─── Message bubble ───────────────────────────────────────────────────────────
 
-function MessageBubble({
-    message, colors, onRetry, userQuestion,
-}: {
-    message: ConsultMessage;
-    colors: ReturnType<typeof useThemeColors>;
-    onRetry?: () => void;
-    userQuestion?: string;
-}) {
-    const isUser = message.role === 'user';
-    const isEmpty = !message.content && message.streaming;
-    const sourceCount = message.metadata
-        ? (message.metadata.guidelines?.length ?? 0)
-            + (message.metadata.webSources?.length ?? 0)
-            + (message.metadata.pubmedSources?.length ?? 0)
-        : 0;
-
-    const markdownStyles = {
+function buildMarkdownStyles(colors: ReturnType<typeof useThemeColors>) {
+    return {
         body: { color: colors.text, fontFamily: 'Inter_400Regular', fontSize: 15, lineHeight: 22 },
         heading1: { color: colors.text, fontFamily: 'Inter_700Bold', fontSize: 18, marginTop: 8, marginBottom: 4 },
         heading2: { color: colors.text, fontFamily: 'Inter_700Bold', fontSize: 16, marginTop: 6, marginBottom: 4 },
@@ -246,6 +231,25 @@ function MessageBubble({
         },
         hr: { backgroundColor: colors.border, height: 1, marginVertical: 8 },
     };
+}
+
+const MessageBubble = memo(function MessageBubble({
+    message, colors, onRetry, userQuestion,
+}: {
+    message: ConsultMessage;
+    colors: ReturnType<typeof useThemeColors>;
+    onRetry?: () => void;
+    userQuestion?: string;
+}) {
+    const isUser = message.role === 'user';
+    const isEmpty = !message.content && message.streaming;
+    const sourceCount = message.metadata
+        ? (message.metadata.guidelines?.length ?? 0)
+            + (message.metadata.webSources?.length ?? 0)
+            + (message.metadata.pubmedSources?.length ?? 0)
+        : 0;
+
+    const markdownStyles = useMemo(() => buildMarkdownStyles(colors), [colors]);
 
     if (isUser) {
         return (
@@ -310,9 +314,15 @@ function MessageBubble({
 
                     {/* Streaming / settled content */}
                     {!!message.content && !message.error && (
-                        <Markdown style={markdownStyles as any}>
-                            {message.content + (message.streaming ? '▋' : '')}
-                        </Markdown>
+                        message.streaming ? (
+                            <Text style={[styles.streamingText, { color: colors.text }]}>
+                                {message.content + '▋'}
+                            </Text>
+                        ) : (
+                            <Markdown style={markdownStyles as any}>
+                                {message.content}
+                            </Markdown>
+                        )
                     )}
 
                     {/* Done metrics */}
@@ -326,8 +336,8 @@ function MessageBubble({
                     )}
                 </View>
 
-                {/* Sources accordion */}
-                {!message.streaming && message.metadata && (
+                {/* Sources — show as soon as metadata arrives, even while streaming */}
+                {message.metadata && (
                     <SourcesAccordion
                         guidelines={message.metadata.guidelines}
                         webSources={message.metadata.webSources}
@@ -342,7 +352,17 @@ function MessageBubble({
             </View>
         </Animated.View>
     );
-}
+}, (prev, next) => {
+    if (prev.message.id !== next.message.id) return false;
+    if (prev.userQuestion !== next.userQuestion) return false;
+    if (prev.message.streaming !== next.message.streaming) return false;
+    if (prev.message.content !== next.message.content) return false;
+    if (prev.message.error !== next.message.error) return false;
+    if (prev.message.stopped !== next.message.stopped) return false;
+    if (prev.message.doneMetrics !== next.message.doneMetrics) return false;
+    if (prev.message.metadata !== next.message.metadata) return false;
+    return true;
+});
 
 // ─── Specialty chip ───────────────────────────────────────────────────────────
 
@@ -401,11 +421,20 @@ function ConsultScreen() {
     const [input, setInput] = useState('');
     const listRef = useRef<FlatList<ConsultMessage>>(null);
     const inputRef = useRef<TextInput>(null);
+    const messagesRef = useRef(messages);
+    messagesRef.current = messages;
 
     const [keyboardOpen, setKeyboardOpen] = useState(false);
     const isNearBottomRef = useRef(true);
     const userScrolledRef = useRef(false);
     const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+    const scrollRafRef = useRef<number | null>(null);
+
+    const streamingTail = useMemo(() => {
+        const last = messages[messages.length - 1];
+        if (!last?.streaming) return '';
+        return `${last.id}:${last.content.length}:${last.metadata ? 1 : 0}`;
+    }, [messages]);
 
     useEffect(() => {
         const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
@@ -415,12 +444,15 @@ function ConsultScreen() {
         return () => { show.remove(); hide.remove(); };
     }, []);
 
-    // Smart auto-scroll: only scroll if user is near the bottom
+    // Auto-scroll — throttled during streaming to avoid jank
     useEffect(() => {
-        if (messages.length > 0 && isNearBottomRef.current && !userScrolledRef.current) {
-            setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 50);
-        }
-    }, [messages.length, messages[messages.length - 1]?.content]);
+        if (messages.length === 0 || !isNearBottomRef.current || userScrolledRef.current) return;
+        if (scrollRafRef.current != null) cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = requestAnimationFrame(() => {
+            scrollRafRef.current = null;
+            listRef.current?.scrollToEnd({ animated: !isStreaming });
+        });
+    }, [messages.length, streamingTail, isStreaming]);
 
     // When user sends a new message, always scroll to bottom
     const scrollToBottom = useCallback(() => {
@@ -478,6 +510,22 @@ function ConsultScreen() {
         newCase();
         setInput('');
     }, [newCase]);
+
+    const renderMessage = useCallback(({ item, index }: { item: ConsultMessage; index: number }) => {
+        const prev = index > 0 ? messagesRef.current[index - 1] : undefined;
+        return (
+            <MessageBubble
+                message={item}
+                colors={colors}
+                userQuestion={prev?.role === 'user' ? prev.content : undefined}
+                onRetry={() => {
+                    if (prev?.role === 'user') {
+                        sendQuestion(prev.content);
+                    }
+                }}
+            />
+        );
+    }, [colors, sendQuestion]);
 
     const handleCameraCapture = useCallback(async () => {
         const { status } = await ImagePicker.requestCameraPermissionsAsync();
@@ -634,27 +682,15 @@ function ConsultScreen() {
                     ref={listRef}
                     data={messages}
                     keyExtractor={m => m.id}
+                    extraData={streamingTail}
                     keyboardDismissMode="interactive"
                     keyboardShouldPersistTaps="handled"
-                    renderItem={({ item, index }) => (
-                        <MessageBubble
-                            message={item}
-                            colors={colors}
-                            userQuestion={
-                                index > 0 && messages[index - 1]?.role === 'user'
-                                    ? messages[index - 1].content
-                                    : undefined
-                            }
-                            onRetry={() => {
-                                if (index > 0) {
-                                    const prev = messages[index - 1];
-                                    if (prev && prev.role === 'user') {
-                                        sendQuestion(prev.content);
-                                    }
-                                }
-                            }}
-                        />
-                    )}
+                    renderItem={renderMessage}
+                    removeClippedSubviews={Platform.OS === 'android'}
+                    maxToRenderPerBatch={6}
+                    windowSize={9}
+                    initialNumToRender={8}
+                    updateCellsBatchingPeriod={50}
                     contentContainerStyle={[
                         styles.messageList,
                         { paddingBottom: 12 },
@@ -663,10 +699,10 @@ function ConsultScreen() {
                     onScroll={handleScroll}
                     onScrollBeginDrag={handleScrollBeginDrag}
                     onScrollEndDrag={handleScrollEndDrag}
-                    scrollEventThrottle={100}
+                    scrollEventThrottle={16}
                     onContentSizeChange={() => {
                         if (isNearBottomRef.current && !userScrolledRef.current) {
-                            listRef.current?.scrollToEnd({ animated: true });
+                            listRef.current?.scrollToEnd({ animated: false });
                         }
                     }}
                 />
@@ -908,6 +944,7 @@ const styles = StyleSheet.create({
     },
     retryBtnText: { fontSize: 12, fontFamily: 'Inter_500Medium' },
     metricsText: { fontSize: 11, fontFamily: 'Inter_400Regular', textAlign: 'right', marginTop: 4 },
+    streamingText: { fontSize: 15, fontFamily: 'Inter_400Regular', lineHeight: 22 },
 
     // Typing dots
     typingStatus: { gap: 8 },

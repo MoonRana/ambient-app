@@ -937,10 +937,12 @@ export async function fetchSpecialties(): Promise<Specialty[]> {
 
 /** Parse SSE chunks and invoke stream callbacks. Returns leftover buffer. */
 function consumeSSEBuffer(buffer: string, callbacks: StreamClinicalQACallbacks): string {
-  const events = buffer.split('\n\n');
+  const normalized = buffer.replace(/\r\n/g, '\n');
+  const events = normalized.split('\n\n');
   const leftover = events.pop() ?? '';
   for (const event of events) {
-    const dataLine = event.split('\n').find(l => l.startsWith('data:'));
+    if (!event.trim()) continue;
+    const dataLine = event.split('\n').find((l) => l.startsWith('data:'));
     if (!dataLine) continue;
     const jsonStr = dataLine.slice('data:'.length).trim();
     if (!jsonStr || jsonStr === '[DONE]') continue;
@@ -959,6 +961,8 @@ function consumeSSEBuffer(buffer: string, callbacks: StreamClinicalQACallbacks):
       callbacks.onDone(parsed.metrics ?? {});
     } else if (parsed.type === 'error') {
       callbacks.onError(new Error(parsed.message || 'Stream error'));
+    } else if (typeof parsed.text === 'string') {
+      callbacks.onToken(parsed.text);
     }
   }
   return leftover;
@@ -1013,6 +1017,68 @@ async function streamClinicalQAWithFetch(
   if (buffer.trim()) consumeSSEBuffer(buffer + '\n\n', callbacks);
 }
 
+/** XHR progressive download — required on React Native where fetch buffers the full body. */
+function streamClinicalQAWithXHR(
+  url: string,
+  headers: Record<string, string>,
+  body: object,
+  callbacks: StreamClinicalQACallbacks,
+  signal: AbortSignal,
+): Promise<void> {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    let seenBytes = 0;
+    let buffer = '';
+    let settled = false;
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+
+    const processIncoming = () => {
+      const currentText = xhr.responseText || '';
+      if (currentText.length <= seenBytes) return;
+      const newData = currentText.substring(seenBytes);
+      seenBytes = currentText.length;
+      buffer += newData;
+      buffer = consumeSSEBuffer(buffer, callbacks);
+    };
+
+    signal.addEventListener('abort', () => {
+      xhr.abort();
+      finish();
+    });
+
+    xhr.open('POST', url);
+    for (const [k, v] of Object.entries(headers)) {
+      xhr.setRequestHeader(k, v);
+    }
+    xhr.setRequestHeader('Accept', 'text/event-stream');
+
+    xhr.onprogress = processIncoming;
+    xhr.onreadystatechange = () => {
+      if (xhr.readyState >= 3) processIncoming();
+      if (xhr.readyState !== 4) return;
+
+      if (xhr.status >= 400 && xhr.status !== 0) {
+        callbacks.onError(new Error(friendlyConsultError(xhr.status, xhr.responseText || '')));
+      } else if (buffer.trim()) {
+        consumeSSEBuffer(buffer + '\n\n', callbacks);
+      }
+      finish();
+    };
+
+    xhr.onerror = () => {
+      callbacks.onError(new Error('Network error. Check your connection and try again.'));
+      finish();
+    };
+
+    xhr.send(JSON.stringify(body));
+  });
+}
+
 /**
  * Stream a clinical Q&A question to the clinical-qa Edge Function.
  * Parses the SSE response and fires typed callbacks.
@@ -1037,47 +1103,31 @@ export function streamClinicalQA(
   getAuthHeaders().then(async (headers) => {
     const url = `${getBaseUrl()}/functions/v1/clinical-qa`;
 
-    // Prefer fetch streaming (more reliable on iPad); fall back to XHR.
+    // React Native fetch buffers SSE until complete — use XHR for live token streaming.
+    if (Platform.OS !== 'web') {
+      try {
+        await streamClinicalQAWithXHR(url, headers, payload, callbacks, controller.signal);
+      } catch (err: any) {
+        if (err?.name !== 'AbortError') {
+          callbacks.onError(err instanceof Error ? err : new Error(String(err)));
+        }
+      }
+      return;
+    }
+
     try {
       await streamClinicalQAWithFetch(url, headers, payload, callbacks, controller.signal);
-      return;
     } catch (err: any) {
       if (err?.name === 'AbortError') return;
       console.warn('[streamClinicalQA] fetch stream failed, trying XHR:', err?.message);
-    }
-
-    const xhr = new XMLHttpRequest();
-    controller.signal.addEventListener('abort', () => xhr.abort());
-
-    xhr.open('POST', url);
-    for (const [k, v] of Object.entries(headers)) {
-      xhr.setRequestHeader(k, v);
-    }
-    xhr.setRequestHeader('Accept', 'text/event-stream');
-
-    let seenBytes = 0;
-    let buffer = '';
-
-    xhr.onreadystatechange = () => {
-      if (xhr.readyState === 3 || xhr.readyState === 4) {
-        if (xhr.readyState === 4 && xhr.status >= 400 && xhr.status !== 0) {
-          callbacks.onError(new Error(friendlyConsultError(xhr.status, xhr.responseText || '')));
-          return;
+      try {
+        await streamClinicalQAWithXHR(url, headers, payload, callbacks, controller.signal);
+      } catch (xhrErr: any) {
+        if (xhrErr?.name !== 'AbortError') {
+          callbacks.onError(xhrErr instanceof Error ? xhrErr : new Error(String(xhrErr)));
         }
-
-        const currentText = xhr.responseText || '';
-        const newData = currentText.substring(seenBytes);
-        seenBytes = currentText.length;
-        buffer += newData;
-        buffer = consumeSSEBuffer(buffer, callbacks);
       }
-    };
-
-    xhr.onerror = () => {
-      callbacks.onError(new Error('Network error. Check your connection and try again.'));
-    };
-
-    xhr.send(JSON.stringify(payload));
+    }
   }).catch(err => {
     if (err?.name !== 'AbortError') {
       callbacks.onError(err instanceof Error ? err : new Error(String(err)));

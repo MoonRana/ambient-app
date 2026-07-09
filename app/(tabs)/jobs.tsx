@@ -253,24 +253,26 @@ export default function JobsDashboard() {
     const active = selectActiveJobs(useJobsStore.getState().jobs);
     if (active.length === 0) return;
 
-    for (const job of active) {
-      try {
-        const fresh = await getJobStatus(job.id);
-        if (fresh) {
-          updateJob(job.id, {
-            status: fresh.status as JobStatus,
-            progress: fresh.progress,
-            currentStep: fresh.current_step || undefined,
-            resultNote: fresh.result_note || undefined,
-            cmeTidbits: fresh.cme_tidbits ?? undefined,
-            error: fresh.error || undefined,
-            completedAt: fresh.completed_at ? new Date(fresh.completed_at).getTime() : undefined,
-          });
+    await Promise.all(
+      active.map(async (job) => {
+        try {
+          const fresh = await getJobStatus(job.id);
+          if (fresh) {
+            updateJob(job.id, {
+              status: fresh.status as JobStatus,
+              progress: fresh.progress,
+              currentStep: fresh.current_step || undefined,
+              resultNote: fresh.result_note || undefined,
+              cmeTidbits: fresh.cme_tidbits ?? undefined,
+              error: fresh.error || undefined,
+              completedAt: fresh.completed_at ? new Date(fresh.completed_at).getTime() : undefined,
+            });
+          }
+        } catch (e: any) {
+          console.warn(`Poll error for job ${job.id}:`, e?.message);
         }
-      } catch (e: any) {
-        console.warn(`Poll error for job ${job.id}:`, e?.message);
-      }
-    }
+      }),
+    );
   }, [updateJob]);
 
   useFocusEffect(
