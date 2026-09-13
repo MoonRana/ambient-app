@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DoMyNote Recordings</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="header">
+    <div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="24" height="24" rx="6" fill="white" fill-opacity="0.2"/>
+          <path d="M12 4C10.4 4 9 5.4 9 7V13C9 14.6 10.4 16 12 16C13.6 16 15 14.6 15 13V7C15 5.4 13.6 4 12 4Z" fill="white"/>
+          <path d="M7 12C7 15.3 9.7 18 13 18M17 12C17 15.3 14.3 18 11 18M12 18V21M9 21H15" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+        <div>
+          <h1>DoMyNote</h1>
+          <div class="subtitle">Live Recordings</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="app">
+    <!-- Login view -->
+    <div id="login-view" class="login-container" style="display:none;">
+      <h2>Sign in to DoMyNote</h2>
+      <p>Use your DoMyNote account credentials to see your recordings here.</p>
+      <input type="email" id="email" placeholder="Email" autocomplete="email" />
+      <input type="password" id="password" placeholder="Password" autocomplete="current-password" />
+      <div id="login-error" class="error-msg" style="display:none;"></div>
+      <button class="btn" id="login-btn">Sign In</button>
+    </div>
+
+    <!-- Recordings view -->
+    <div id="recordings-view" style="display:none;">
+      <div class="toolbar">
+        <span id="user-email-label"></span>
+        <button class="logout-btn" id="logout-btn">Sign out</button>
+      </div>
+      <div id="recordings-list" class="recordings-list">
+        <div class="state-msg">
+          <div class="spinner"></div>
+          Loading recordings…
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>
