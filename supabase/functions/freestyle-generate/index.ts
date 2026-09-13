@@ -211,8 +211,15 @@ async function processJob(supabase: any, jobId: string, inputs: any, userId: str
 
       if (soapResp.ok) {
         const soapData = await soapResp.json();
-        resultNote = soapData.full_note || null;
-        console.log(`[freestyle] SOAP note generated: ${resultNote?.length || 0} chars`);
+        const candidate = soapData.full_note || null;
+        // generate-soap-note sometimes returns error JSON as full_note when healthscribe_summary is absent
+        const isErrorPayload = candidate && (soapData.error || (candidate.startsWith('{') && candidate.includes('"error"')));
+        if (isErrorPayload) {
+          console.warn(`[freestyle] generate-soap-note returned error payload in full_note: ${candidate.slice(0, 200)}`);
+        } else {
+          resultNote = candidate;
+          console.log(`[freestyle] SOAP note generated: ${resultNote?.length || 0} chars`);
+        }
       } else {
         const errText = await soapResp.text();
         console.warn(`[freestyle] generate-soap-note returned ${soapResp.status}: ${errText.slice(0, 300)}`);

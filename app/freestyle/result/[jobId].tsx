@@ -44,6 +44,14 @@ const soapStyles = StyleSheet.create({
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function parseNote(note: string) {
+  // Detect JSON error payloads that leaked through from the server
+  if (note.trimStart().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(note);
+      if (parsed.error) return null;
+    } catch {}
+  }
+
   const sections: { label: string; content: string }[] = [];
   // Try to parse structured sections from the note
   const sectionHeaders = [
@@ -174,7 +182,8 @@ export default function FreestyleResultScreen() {
     }
   }, [jobId, updateJob]);
 
-  const sections = note ? parseNote(note) : [];
+  const sections = note ? (parseNote(note) ?? []) : [];
+  const isJsonError = note ? parseNote(note) === null : false;
   const isComplete = localJob?.status === 'complete';
   const isActive = localJob && !['complete', 'failed'].includes(localJob.status);
 
@@ -271,6 +280,19 @@ export default function FreestyleResultScreen() {
                 delay={i * 80}
               />
             ))}
+          </Animated.View>
+        )}
+
+        {/* Error state — JSON error leaked into note */}
+        {isJsonError && (
+          <Animated.View entering={FadeIn.duration(300)} style={styles.errorContainer}>
+            <Ionicons name="alert-circle" size={32} color={colors.recording} />
+            <Text style={[styles.errorTitle, { color: colors.recording }]}>
+              Generation Failed
+            </Text>
+            <Text style={[styles.errorText, { color: colors.textSecondary }]}>
+              The AI note generator encountered an error. Please try again, or add more clinical details and retry.
+            </Text>
           </Animated.View>
         )}
 
