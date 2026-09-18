@@ -174,7 +174,7 @@ export default function CaptureScreen() {
       Alert.alert(
         isApiKeyError ? 'AI Service Not Configured' : 'Scan Error',
         isApiKeyError
-          ? 'The document scanning service needs an API key.\n\nGo to: Supabase Dashboard → Edge Functions → Secrets.\n\nYou can still enter patient info manually.'
+          ? 'Document reading is temporarily unavailable. Please try again shortly, or enter the patient details manually.'
           : `Could not extract info: ${msg}`,
         [
           { text: 'OK' },
@@ -300,11 +300,11 @@ export default function CaptureScreen() {
         showsVerticalScrollIndicator={false}
       >
         <Animated.View entering={FadeInDown.duration(400)}>
-          <Text style={[styles.title, { color: colors.text }]}>Scan Documents</Text>
+          <Text style={[styles.title, { color: colors.text }]}>Build a Note from Documents</Text>
           <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
             {images.length > 0
-              ? `${images.length} document${images.length !== 1 ? 's' : ''} captured. Tap the scan button on each to extract data.`
-              : 'Photograph insurance cards, lab results, pill bottles, or medication lists.'}
+              ? `${images.length} document${images.length !== 1 ? 's' : ''} added. Tap Generate Note when you're done.`
+              : 'Photograph labs, prior notes, med lists, or an insurance card — DoMyNote drafts the H&P from them.'}
           </Text>
         </Animated.View>
 
@@ -321,7 +321,7 @@ export default function CaptureScreen() {
             ]}
           >
             <Ionicons name="camera" size={24} color="#fff" />
-            <Text style={styles.captureBtnText}>Take Photo</Text>
+            <Text style={styles.captureBtnText}>Photograph Document</Text>
           </Pressable>
           <Pressable
             onPress={() => addImage(false)}
@@ -553,11 +553,14 @@ export default function CaptureScreen() {
             { backgroundColor: colors.tint, opacity: pressed ? 0.9 : 1 },
           ]}
         >
+          <Ionicons name="sparkles" size={20} color="#fff" />
           <Text style={styles.nextButtonText}>
-            {images.length > 0 ? 'Continue to Review' : 'Skip & Continue'}
+            {images.length > 0 ? 'Generate Note' : 'Continue without Documents'}
           </Text>
-          <Ionicons name="arrow-forward" size={20} color="#fff" />
         </Pressable>
+        <Text style={[styles.footerHint, { color: colors.textTertiary }]}>
+          Your note opens on the next screen and is saved under Recent Encounters on Home.
+        </Text>
       </Animated.View>
     </View>
   );
@@ -839,5 +842,12 @@ const styles = StyleSheet.create({
     fontSize: 17,
     fontFamily: 'Inter_600SemiBold',
     color: '#fff',
+  },
+  footerHint: {
+    fontSize: 12,
+    fontFamily: 'Inter_400Regular',
+    textAlign: 'center',
+    marginTop: 10,
+    lineHeight: 17,
   },
 });

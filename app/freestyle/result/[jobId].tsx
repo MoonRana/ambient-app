@@ -30,15 +30,32 @@ function NoteSection({
       style={[soapStyles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}
     >
       <Text style={[soapStyles.label, { color: colors.tint }]}>{label}</Text>
-      <Text style={[soapStyles.text, { color: colors.text }]}>{content}</Text>
+      <Text style={[soapStyles.text, { color: colors.text }]}>{renderInline(content)}</Text>
     </Animated.View>
   );
+}
+
+// Renders **bold** as bold rather than printing literal asterisks into the note
+function renderInline(text: string) {
+  const cleaned = text.replace(/^#{1,6}\s+/gm, '').replace(/^\s*[-*+]\s+/gm, '• ');
+  const parts = cleaned.split(/(\*\*[^*]+\*\*|__[^_]+__)/g);
+  return parts.map((part, i) => {
+    if (/^(\*\*[^*]+\*\*|__[^_]+__)$/.test(part)) {
+      return (
+        <Text key={i} style={soapStyles.bold}>
+          {part.slice(2, -2)}
+        </Text>
+      );
+    }
+    return part;
+  });
 }
 
 const soapStyles = StyleSheet.create({
   card: { borderRadius: 16, borderWidth: 1, padding: 18, gap: 10 },
   label: { fontSize: 11, fontFamily: 'Inter_700Bold', textTransform: 'uppercase', letterSpacing: 1.5 },
   text: { fontSize: 15, fontFamily: 'Inter_400Regular', lineHeight: 24 },
+  bold: { fontFamily: 'Inter_700Bold' },
 });
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -53,45 +70,72 @@ function parseNote(note: string) {
   }
 
   const sections: { label: string; content: string }[] = [];
-  // Try to parse structured sections from the note
+
+  // Patterns match the NORMALIZED title (markdown stripped, trailing colon removed),
+  // anchored end-to-end so body lines like "Vitals: BP 148/92" are never promoted to headers.
   const sectionHeaders = [
-    { pattern: /(?:^|\n)(HISTORY OF PRESENT ILLNESS|HPI)[:\n]/i, label: 'History of Present Illness' },
-    { pattern: /(?:^|\n)(REVIEW OF SYSTEMS|ROS)[:\n]/i, label: 'Review of Systems' },
-    { pattern: /(?:^|\n)(PHYSICAL EXAM(?:INATION)?|PE)[:\n]/i, label: 'Physical Examination' },
-    { pattern: /(?:^|\n)(ASSESSMENT(?:\s*(?:&|AND)\s*PLAN)?)[:\n]/i, label: 'Assessment & Plan' },
-    { pattern: /(?:^|\n)(PLAN)[:\n]/i, label: 'Plan' },
-    { pattern: /(?:^|\n)(SUBJECTIVE)[:\n]/i, label: 'Subjective' },
-    { pattern: /(?:^|\n)(OBJECTIVE)[:\n]/i, label: 'Objective' },
-    { pattern: /(?:^|\n)(ASSESSMENT)[:\n]/i, label: 'Assessment' },
-    { pattern: /(?:^|\n)(FOLLOW[- ]?UP)[:\n]/i, label: 'Follow-Up' },
+    { pattern: /^(?:PATIENT IDENTIFICATION|PATIENT INFORMATION|IDENTIFICATION)$/i, label: 'Patient Identification' },
+    { pattern: /^(?:CHIEF COMPLAINT|CC)$/i, label: 'Chief Complaint' },
+    { pattern: /^(?:HISTORY OF PRESENT ILLNESS|HPI)$/i, label: 'History of Present Illness' },
+    { pattern: /^(?:PAST MEDICAL HISTORY|PMH)$/i, label: 'Past Medical History' },
+    { pattern: /^(?:PAST SURGICAL HISTORY|PSH|SURGICAL HISTORY)$/i, label: 'Past Surgical History' },
+    { pattern: /^(?:FAMILY HISTORY|FH)$/i, label: 'Family History' },
+    { pattern: /^(?:SOCIAL HISTORY|SH)$/i, label: 'Social History' },
+    { pattern: /^(?:ALLERGIES|ALLERGY)$/i, label: 'Allergies' },
+    { pattern: /^(?:CURRENT MEDICATIONS|MEDICATIONS|MEDS)$/i, label: 'Current Medications' },
+    { pattern: /^(?:REVIEW OF SYSTEMS|ROS)$/i, label: 'Review of Systems' },
+    { pattern: /^(?:VITAL SIGNS|VITALS)$/i, label: 'Vital Signs' },
+    { pattern: /^(?:PHYSICAL EXAM(?:INATION)?|PE)$/i, label: 'Physical Examination' },
+    { pattern: /^(?:LABS?(?:\s*(?:&|AND)\s*(?:DATA|IMAGING))?|LABORATORY|IMAGING)$/i, label: 'Labs & Data' },
+    { pattern: /^(?:ASSESSMENT\s*(?:&|AND|\/)\s*PLAN|A\s*\/\s*P)$/i, label: 'Assessment & Plan' },
+    { pattern: /^(?:MEDICAL DECISION MAKING|MDM)$/i, label: 'Medical Decision Making' },
+    { pattern: /^(?:ASSESSMENT|IMPRESSION)$/i, label: 'Assessment' },
+    { pattern: /^(?:PLAN)$/i, label: 'Plan' },
+    { pattern: /^(?:SUBJECTIVE)$/i, label: 'Subjective' },
+    { pattern: /^(?:OBJECTIVE)$/i, label: 'Objective' },
+    { pattern: /^(?:FOLLOW[- ]?UP)$/i, label: 'Follow-Up' },
   ];
 
-  // If no structured sections found, return the whole note as one block
-  let hasStructure = sectionHeaders.some((s) => s.pattern.test(note));
+  // Strip markdown wrappers so "**History of Present Illness:**" and "### Assessment"
+  // are recognized the same as a plain "HISTORY OF PRESENT ILLNESS:".
+  const matchHeader = (line: string) => {
+    const bare = line
+      .replace(/^\s*#{1,6}\s*/, '')
+      .replace(/^\s*[-*+]\s+/, '')
+      .replace(/\*\*/g, '')
+      .replace(/__/g, '')
+      .trim();
 
-  if (!hasStructure) {
+    const colonIdx = bare.indexOf(':');
+    const title = (colonIdx >= 0 ? bare.slice(0, colonIdx) : bare).trim();
+    if (!title || title.length > 40) return null;
+
+    for (const header of sectionHeaders) {
+      if (header.pattern.test(title)) {
+        return { label: header.label, inline: colonIdx >= 0 ? bare.slice(colonIdx + 1).trim() : '' };
+      }
+    }
+    return null;
+  };
+
+  const lines = note.split('\n');
+  if (!lines.some((l) => matchHeader(l))) {
     return [{ label: 'Clinical Note', content: note.trim() }];
   }
 
-  // Split by known headers
-  const lines = note.split('\n');
   let currentLabel = 'Overview';
   let currentContent: string[] = [];
 
   for (const line of lines) {
-    let matched = false;
-    for (const header of sectionHeaders) {
-      if (header.pattern.test(line)) {
-        if (currentContent.length > 0) {
-          sections.push({ label: currentLabel, content: currentContent.join('\n').trim() });
-        }
-        currentLabel = header.label;
-        currentContent = [];
-        matched = true;
-        break;
+    const hit = matchHeader(line);
+    if (hit) {
+      if (currentContent.length > 0) {
+        sections.push({ label: currentLabel, content: currentContent.join('\n').trim() });
       }
-    }
-    if (!matched) {
+      currentLabel = hit.label;
+      // Keep anything written after the colon on the header line
+      currentContent = hit.inline ? [hit.inline] : [];
+    } else {
       currentContent.push(line);
     }
   }
@@ -100,7 +144,19 @@ function parseNote(note: string) {
     sections.push({ label: currentLabel, content: currentContent.join('\n').trim() });
   }
 
-  return sections.filter((s) => s.content.length > 0);
+  // Keep empty sections — "PAST SURGICAL HISTORY: (none)" is audit evidence that it was addressed
+  return sections;
+}
+
+// Flatten markdown for clipboard/share — EHRs must never receive literal asterisks
+export function toPlainText(md: string) {
+  return md
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/(\*\*|__)(.*?)\1/g, '$2')
+    .replace(/^\s*[-*+]\s+/gm, '• ')
+    .replace(/`{1,3}([^`]*)`{1,3}/g, '$1')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 // ── Main Screen ──────────────────────────────────────────────────────────────
@@ -166,7 +222,7 @@ export default function FreestyleResultScreen() {
     // RN Clipboard deprecated, use @react-native-clipboard/clipboard or inline
     try {
       const { Clipboard } = require('react-native');
-      Clipboard.setString(note);
+      Clipboard.setString(toPlainText(note));
     } catch {
       // Fallback for web / missing clipboard
     }

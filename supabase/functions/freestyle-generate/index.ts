@@ -188,55 +188,21 @@ async function processJob(supabase: any, jobId: string, inputs: any, userId: str
 
     let resultNote: string | null = null;
 
-    // Call the proven generate-soap-note edge function
-    try {
-      console.log(`[freestyle] Calling generate-soap-note, transcript length: ${combinedTranscript.length}`);
-      const soapResp = await fetch(`${SUPABASE_URL}/functions/v1/generate-soap-note`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${SERVICE_KEY}`,
-          "apikey": SERVICE_KEY,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          session_id: jobId,
-          transcript: combinedTranscript,
-          patient_info: inputs.patient_info || {},
-          medications: inputs.medications || [],
-          diagnoses: [],
-          custom_instructions: inputs.custom_instructions || "",
-          em_level: inputs.em_level || null,
-        }),
-      });
-
-      if (soapResp.ok) {
-        const soapData = await soapResp.json();
-        const candidate = soapData.full_note || null;
-        // generate-soap-note sometimes returns error JSON as full_note when healthscribe_summary is absent
-        const isErrorPayload = candidate && (soapData.error || (candidate.startsWith('{') && candidate.includes('"error"')));
-        if (isErrorPayload) {
-          console.warn(`[freestyle] generate-soap-note returned error payload in full_note: ${candidate.slice(0, 200)}`);
-        } else {
-          resultNote = candidate;
-          console.log(`[freestyle] SOAP note generated: ${resultNote?.length || 0} chars`);
-        }
-      } else {
-        const errText = await soapResp.text();
-        console.warn(`[freestyle] generate-soap-note returned ${soapResp.status}: ${errText.slice(0, 300)}`);
+    // H&P generation runs against the full-section contract directly.
+    // generate-soap-note is NOT used here: it emits a four-part SOAP note, which
+    // structurally cannot carry PMH/PSH/FH/SH/Allergies/ROS/Exam that an H&P audit requires.
+    if (OPENAI_API_KEY) {
+      console.log(`[freestyle] Generating H&P, transcript length: ${combinedTranscript.length}`);
+      try {
+        resultNote = await generateNoteDirectly(OPENAI_API_KEY, combinedTranscript, directiveBlock);
+        console.log(`[freestyle] H&P generated: ${resultNote?.length || 0} chars`);
+      } catch (e: any) {
+        console.error(`[freestyle] H&P generation failed: ${e?.message}`);
       }
-    } catch (e: any) {
-      console.warn(`[freestyle] generate-soap-note failed: ${e?.message}`);
-    }
-
-    // Fallback: direct OpenAI if SOAP function didn't work
-    if (!resultNote && OPENAI_API_KEY) {
-      console.log(`[freestyle] Fallback to direct OpenAI`);
-      await updateJob({ progress: 70, current_step: "Generating note (fallback)" });
-      resultNote = await generateNoteDirectly(OPENAI_API_KEY, combinedTranscript, directiveBlock);
     }
 
     if (!resultNote) {
-      resultNote = `CLINICAL DOCUMENTATION\n\n${combinedTranscript}\n\n---\nNote: AI generation was not available. Raw clinical content shown above.`;
+      resultNote = `CLINICAL DOCUMENTATION\n\n${clinicalContent}\n\n---\nNote: AI generation was not available. Raw clinical content shown above.`;
     }
 
     logTiming("note generation", generateStart);
@@ -426,9 +392,12 @@ function buildDirectiveBlock(customInstructions?: string, emLevel?: string | nul
     );
   }
 
-  if (parts.length === 0) return "";
+  parts.push(
+    `E/M level governs the DEPTH of the HPI, ROS and medical decision-making narrative. ` +
+    `It NEVER permits omitting a section header — every section listed in the output contract must appear regardless of E/M level.`,
+  );
 
-  return `DOCUMENTATION INSTRUCTIONS (highest priority — follow these over default formatting):\n${parts.join("\n\n")}`;
+  return `DOCUMENTATION INSTRUCTIONS (apply these within the output contract above — they never override the required section list):\n${parts.join("\n\n")}`;
 }
 
 // ── Whisper Transcription ────────────────────────────────────────────────────
@@ -557,36 +526,128 @@ async function generateCmeTidbits(
 
 // ── Direct OpenAI Note Generation (fallback) ─────────────────────────────────
 
+const REQUIRED_SECTIONS = [
+  "PATIENT IDENTIFICATION",
+  "CHIEF COMPLAINT",
+  "HISTORY OF PRESENT ILLNESS",
+  "PAST MEDICAL HISTORY",
+  "PAST SURGICAL HISTORY",
+  "FAMILY HISTORY",
+  "SOCIAL HISTORY",
+  "ALLERGIES",
+  "CURRENT MEDICATIONS",
+  "REVIEW OF SYSTEMS",
+  "PHYSICAL EXAMINATION",
+  "ASSESSMENT",
+  "PLAN",
+];
+
+const ROS_SYSTEMS = [
+  "Constitutional", "Eyes", "ENT/Mouth", "Cardiovascular", "Respiratory",
+  "Gastrointestinal", "Genitourinary", "Musculoskeletal", "Skin",
+  "Neurological", "Psychiatric", "Endocrine", "Hematologic/Lymphatic", "Allergic/Immunologic",
+];
+
+const EXAM_SYSTEMS = [
+  "General Appearance", "Vital Signs", "HEENT", "Neck", "Cardiovascular",
+  "Respiratory", "Abdomen", "Extremities", "Skin", "Neurological", "Psychiatric",
+];
+
+const HP_CONTRACT = `You are a clinical documentation specialist producing a History & Physical (H&P) note that must withstand a payer audit.
+
+OUTPUT CONTRACT — follow exactly:
+
+1. Emit EVERY one of these section headers, in this order, on its own line, in ALL CAPS followed by a colon. Never omit a header, even when the source data is silent about it:
+${REQUIRED_SECTIONS.map((s) => `   ${s}:`).join("\n")}
+
+2. When the source data does not cover a section, still emit the header and write a clinically valid statement of absence — "Noncontributory", "Not obtained this visit", "NKDA" (for allergies), or "Deferred". NEVER silently drop a header. NEVER fabricate findings that were not documented.
+
+3. REVIEW OF SYSTEMS must individually address each of these systems on its own line, in this order. For systems not discussed, write "Not assessed":
+${ROS_SYSTEMS.map((s) => `   ${s}:`).join("\n")}
+
+4. PHYSICAL EXAMINATION must individually address each of these on its own line. For systems not examined, write "Not examined":
+${EXAM_SYSTEMS.map((s) => `   ${s}:`).join("\n")}
+
+5. ASSESSMENT must be a numbered problem list. PLAN must address each numbered problem with the same numbering.
+
+6. FORMATTING — output PLAIN TEXT ONLY. Do NOT use markdown. No asterisks, no "**bold**", no "#" headings, no backticks. Section headers are ALL CAPS at column zero followed by a colon. This text is pasted directly into an electronic health record.`;
+
 async function generateNoteDirectly(apiKey: string, transcript: string, directiveBlock = ""): Promise<string> {
   const systemContent = directiveBlock
-    ? `You are a clinical documentation specialist. Generate an H&P note from the provided clinical data. Only include sections with actual data — never write "[Not documented]". Use standard medical format.\n\n${directiveBlock}`
-    : `You are a clinical documentation specialist. Generate an H&P note from the provided clinical data. Only include sections with actual data — never write "[Not documented]". Use standard medical format.`;
+    ? `${HP_CONTRACT}\n\n${directiveBlock}`
+    : HP_CONTRACT;
 
-  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
+  const messages = [
+    { role: "system", content: systemContent },
+    {
+      role: "user",
+      content: `Generate a complete History & Physical from the clinical data below. Every section listed in your instructions must appear in the output.\n\n${transcript}`,
     },
-    body: JSON.stringify({
-      model: "gpt-4o",
-      messages: [
-        {
-          role: "system",
-          content: systemContent,
-        },
-        { role: "user", content: `Generate an H&P note:\n\n${transcript}` },
-      ],
-      temperature: 0.3,
-      max_tokens: 4000,
-    }),
-  });
+  ];
 
-  if (!resp.ok) {
-    const err = await resp.text();
-    throw new Error(`OpenAI error ${resp.status}: ${err.slice(0, 200)}`);
+  const callModel = async (msgs: any[]) => {
+    const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o",
+        messages: msgs,
+        temperature: 0.3,
+        max_tokens: 8000,
+      }),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.text();
+      throw new Error(`OpenAI error ${resp.status}: ${err.slice(0, 200)}`);
+    }
+
+    const data = await resp.json();
+    const choice = data.choices?.[0];
+    return {
+      content: choice?.message?.content?.trim() || "",
+      truncated: choice?.finish_reason === "length",
+    };
+  };
+
+  let { content, truncated } = await callModel(messages);
+
+  // Model hit the ceiling mid-note — continue from where it stopped
+  if (truncated && content) {
+    console.warn(`[freestyle] Note truncated at ${content.length} chars, continuing`);
+    const cont = await callModel([
+      ...messages,
+      { role: "assistant", content },
+      { role: "user", content: "Continue the note from exactly where you stopped. Do not repeat any text already written." },
+    ]);
+    content = `${content}\n${cont.content}`.trim();
   }
 
-  const data = await resp.json();
-  return data.choices?.[0]?.message?.content?.trim() || "Error: No content generated";
+  if (!content) return "Error: No content generated";
+
+  // Completeness gate — repair any missing required headers rather than shipping a partial note
+  const missing = REQUIRED_SECTIONS.filter(
+    (s) => !new RegExp(`^\\s*${s.replace(/[/&]/g, "\\$&")}\\s*:`, "im").test(content),
+  );
+
+  if (missing.length > 0) {
+    console.warn(`[freestyle] Missing sections after generation: ${missing.join(", ")} — repairing`);
+    const repair = await callModel([
+      { role: "system", content: systemContent },
+      { role: "user", content: `Generate a complete History & Physical from this clinical data:\n\n${transcript}` },
+      { role: "assistant", content },
+      {
+        role: "user",
+        content: `This note is missing these required sections: ${missing.join(", ")}.\n\nReturn the COMPLETE note again with every required section present. Keep all existing content unchanged and add the missing sections in their correct position.`,
+      },
+    ]);
+    if (repair.content && repair.content.length > content.length * 0.7) {
+      content = repair.content;
+    }
+  }
+
+  return content;
 }
