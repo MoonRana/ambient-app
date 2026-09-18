@@ -13,7 +13,7 @@ import Animated, {
 import { useThemeColors } from '@/constants/colors';
 import { useSessions, AmbientSession } from '@/lib/session-context';
 import { useEffectiveColorScheme, useSettings } from '@/lib/settings-context';
-import { useJobsStore, selectActiveJobs, type FreestyleJob, type JobStatus } from '@/lib/stores/useJobsStore';
+import { useJobsStore, selectActiveJobs, selectRecentJobs, type FreestyleJob, type JobStatus } from '@/lib/stores/useJobsStore';
 import { useAuth } from '@/lib/auth-context';
 import { BrandMark } from '@/components/BrandLogo';
 
@@ -92,40 +92,64 @@ function formatTimeAgo(timestamp: number): string {
   return new Date(timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
-// ── Active Jobs Banner ────────────────────────────────────────────────────────
-function ActiveJobsBanner({
-  jobs, colors,
+// ── Notes Banner ──────────────────────────────────────────────────────────────
+// Stays visible after a job completes so a finished note is always reachable —
+// without it, the only route to /freestyle/result/[jobId] disappears on completion.
+function NotesBanner({
+  active, completed, colors,
 }: {
-  jobs: FreestyleJob[];
+  active: FreestyleJob[];
+  completed: FreestyleJob[];
   colors: ReturnType<typeof useThemeColors>;
 }) {
-  if (jobs.length === 0) return null;
+  if (active.length === 0 && completed.length === 0) return null;
+
+  const isWorking = active.length > 0;
+  const accent = isWorking ? colors.tint : colors.success ?? colors.tint;
+
+  // One finished note goes straight to it; anything else opens the list
+  const onPress = () => {
+    if (!isWorking && completed.length === 1) {
+      router.navigate(`/freestyle/result/${completed[0].id}` as any);
+    } else {
+      router.navigate('/(tabs)/jobs' as any);
+    }
+  };
+
+  const title = isWorking
+    ? `${active.length} note${active.length !== 1 ? 's' : ''} generating`
+    : completed.length === 1
+      ? 'Your note is ready'
+      : `${completed.length} notes ready`;
+
+  const subtitle = isWorking
+    ? active.map((j) => getJobStatusConfig(j.status, colors).label).join(', ')
+    : completed.length === 1
+      ? 'Tap to open it'
+      : 'Tap to see all your notes';
 
   return (
     <Animated.View entering={FadeInDown.duration(300).delay(50)}>
       <Pressable
-        onPress={() => router.navigate('/(tabs)/jobs' as any)}
+        onPress={onPress}
         style={({ pressed }) => [
           styles.jobsBanner,
           {
-            backgroundColor: `${colors.tint}10`,
-            borderColor: `${colors.tint}30`,
+            backgroundColor: `${accent}10`,
+            borderColor: `${accent}30`,
             opacity: pressed ? 0.85 : 1,
           },
         ]}
       >
-        <View style={[styles.jobsBannerIcon, { backgroundColor: `${colors.tint}20` }]}>
-          <ActivityIndicator size={14} color={colors.tint} />
+        <View style={[styles.jobsBannerIcon, { backgroundColor: `${accent}20` }]}>
+          {isWorking
+            ? <ActivityIndicator size={14} color={accent} />
+            : <Ionicons name="document-text" size={14} color={accent} />}
         </View>
         <View style={styles.jobsBannerText}>
-          <Text style={[styles.jobsBannerTitle, { color: colors.text }]}>
-            {jobs.length} active job{jobs.length !== 1 ? 's' : ''}
-          </Text>
+          <Text style={[styles.jobsBannerTitle, { color: colors.text }]}>{title}</Text>
           <Text style={[styles.jobsBannerSub, { color: colors.textSecondary }]} numberOfLines={1}>
-            {jobs.map(j => {
-              const s = getJobStatusConfig(j.status, colors);
-              return s.label;
-            }).join(', ')}
+            {subtitle}
           </Text>
         </View>
         <Ionicons name="chevron-forward" size={16} color={colors.textTertiary} />
@@ -262,6 +286,10 @@ export default function HomeHub() {
   const { clinicalSetting, defaultHomeAction } = useSettings();
   const jobsMap = useJobsStore((s) => s.jobs);
   const activeJobs = useMemo(() => selectActiveJobs(jobsMap), [jobsMap]);
+  const completedJobs = useMemo(
+    () => selectRecentJobs(jobsMap).filter((j) => j.status === 'complete' && !!j.resultNote),
+    [jobsMap],
+  );
   const userName = user?.email?.split('@')[0] || '';
   const greeting = getGreeting();
 
@@ -485,7 +513,7 @@ export default function HomeHub() {
       </Animated.View>
 
       {/* ── Active Jobs Banner ── */}
-      <ActiveJobsBanner jobs={activeJobs} colors={colors} />
+      <NotesBanner active={activeJobs} completed={completedJobs} colors={colors} />
 
       {/* ── Inbox header ── */}
       {sessions.length > 0 ? (
@@ -526,7 +554,7 @@ export default function HomeHub() {
         </Animated.View>
       )}
     </View>
-  ), [greeting, userName, colors, glowStyle, pulseStyle, handlePrimaryHero, handleStartSession, handleFreestyleWithCapture, handleFreestyle, isDocumentFirst, heroUsesMic, heroLabel, heroSublabel, secondaryRecordHint, defaultHomeAction, activeJobs, sessions]);
+  ), [greeting, userName, colors, glowStyle, pulseStyle, handlePrimaryHero, handleStartSession, handleFreestyleWithCapture, handleFreestyle, isDocumentFirst, heroUsesMic, heroLabel, heroSublabel, secondaryRecordHint, defaultHomeAction, activeJobs, completedJobs, sessions]);
 
   const listFooter = useMemo(() => (
     <Animated.View entering={FadeInUp.duration(400).delay(400)} style={styles.footerSection}>

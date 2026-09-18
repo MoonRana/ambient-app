@@ -315,7 +315,7 @@ export default function JobsDashboard() {
             <Ionicons name="arrow-back" size={20} color={colors.text} />
           </Pressable>
           <View>
-            <Text style={[styles.title, { color: colors.text }]}>Jobs</Text>
+            <Text style={[styles.title, { color: colors.text }]}>My Notes</Text>
             <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
               {activeJobs.length > 0
                 ? `${activeJobs.length} active · ${jobs.length} total`

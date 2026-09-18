@@ -32,7 +32,7 @@ function NativeTabLayout() {
         <Label>History</Label>
       </NativeTabs.Trigger>
       <NativeTabs.Trigger name="jobs" href={null}>
-        <Label>Jobs</Label>
+        <Label>My Notes</Label>
       </NativeTabs.Trigger>
     </NativeTabs>
   );
@@ -123,7 +123,7 @@ function ClassicTabLayout() {
         name="jobs"
         options={{
           href: null,
-          title: "Jobs",
+          title: "My Notes",
         }}
       />
     </Tabs>
