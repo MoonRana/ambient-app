@@ -23,6 +23,7 @@ export interface ChatRequest {
   job_id: string;
   message: string;
   current_note: string;
+  apply_message_id?: string;
 }
 
 export interface ChatDiff {
@@ -31,11 +32,17 @@ export interface ChatDiff {
   after: string;
 }
 
+/** Stored on the assistant message row: the real diff plus the pending revision. */
+export interface ChatDiffPayload {
+  changes: ChatDiff[];
+  revised_note: string;
+}
+
 export interface ChatResponse {
   message_id: string;
   reply: string;
   updated_note: string;
-  diff: ChatDiff[];
+  diff: ChatDiff[] | ChatDiffPayload;
 }
 
 export interface ChatMessage {
@@ -44,9 +51,16 @@ export interface ChatMessage {
   user_id: string;
   role: 'user' | 'assistant';
   content: string;
-  diff: ChatDiff[] | null;
+  diff: ChatDiffPayload | ChatDiff[] | null;
   applied: boolean;
   created_at: string;
+}
+
+/** Older rows stored a bare array; current rows store { changes, revised_note }. */
+export function getDiffChanges(diff: ChatMessage['diff']): ChatDiff[] {
+  if (!diff) return [];
+  if (Array.isArray(diff)) return diff;
+  return diff.changes ?? [];
 }
 
 // ── API Functions ────────────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TextInput, Pressable, Platform,
-  FlatList, ActivityIndicator,
+  FlatList, ActivityIndicator, Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -9,7 +9,7 @@ import Animated, { FadeIn, FadeInDown, FadeInUp } from 'react-native-reanimated'
 import BottomSheet, { BottomSheetView, BottomSheetBackdrop } from '@gorhom/bottom-sheet';
 import { useThemeColors } from '@/constants/colors';
 import { useEffectiveColorScheme } from '@/lib/settings-context';
-import { sendChatMessage, getChatHistory, applyChatDiff, type ChatMessage, type ChatDiff } from '@/lib/api/freestyleChat';
+import { sendChatMessage, getChatHistory, getDiffChanges, type ChatMessage, type ChatDiff } from '@/lib/api/freestyleChat';
 
 interface Props {
   jobId: string;
@@ -114,23 +114,23 @@ export default function NoteChatDrawer({ jobId, currentNote, onNoteUpdate }: Pro
     if (!msg.diff) return;
 
     try {
-      // Apply the updated note
+      // Commit the revision the clinician just reviewed — the server holds it on this message row
       const response = await sendChatMessage({
         job_id: jobId,
         message: '',
         current_note: currentNote,
+        apply_message_id: msg.id,
       });
       onNoteUpdate(response.updated_note);
-      await applyChatDiff(msg.id);
 
-      // Mark as applied locally
       setMessages((prev) =>
         prev.map((m) => (m.id === msg.id ? { ...m, applied: true } : m)),
       );
 
       if (Platform.OS !== 'web') Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e: any) {
-      console.error('Failed to apply diff:', e?.message);
+      console.error('Failed to apply revision:', e?.message);
+      Alert.alert('Could not apply', e?.message || 'The revision could not be saved. Please try again.');
     }
   }, [jobId, currentNote, onNoteUpdate]);
 
@@ -148,9 +148,9 @@ export default function NoteChatDrawer({ jobId, currentNote, onNoteUpdate }: Pro
             <Text style={[styles.assistantText, { color: colors.text }]}>{item.content}</Text>
 
             {/* Diff cards */}
-            {item.diff && item.diff.length > 0 && !item.applied && (
+            {getDiffChanges(item.diff).length > 0 && !item.applied && (
               <View style={styles.diffContainer}>
-                {item.diff.map((d, i) => (
+                {getDiffChanges(item.diff).map((d, i) => (
                   <DiffCard key={i} diff={d} colors={colors} />
                 ))}
                 <View style={styles.diffActions}>
