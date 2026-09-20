@@ -2,9 +2,10 @@ import React, { useState, useRef, useCallback, useEffect, useMemo, memo } from '
 import {
     View, Text, StyleSheet, Pressable, Platform,
     ScrollView, TextInput, FlatList, Linking, Alert,
-    KeyboardAvoidingView, ActivityIndicator, Keyboard,
+    KeyboardAvoidingView, ActivityIndicator, Keyboard, ActionSheetIOS,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -527,22 +528,68 @@ function ConsultScreen() {
         );
     }, [colors, sendQuestion]);
 
-    const handleCameraCapture = useCallback(async () => {
+    const pickFromCamera = useCallback(async () => {
         const { status } = await ImagePicker.requestCameraPermissionsAsync();
         if (status !== 'granted') {
-            Alert.alert('Permission Needed', 'Camera access is required to scan documents.');
+            Alert.alert('Permission Needed', 'Camera access is required to photograph documents.');
             return;
         }
-        const result = await ImagePicker.launchCameraAsync({
-            quality: 0.65,
-            allowsEditing: false,
-        });
+        const result = await ImagePicker.launchCameraAsync({ quality: 0.65, allowsEditing: false });
         if (result.canceled || !result.assets?.[0]?.uri) return;
-        if (Platform.OS !== 'web') {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        }
+        if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
         attachDocument(result.assets[0].uri);
     }, [attachDocument]);
+
+    const pickFromLibrary = useCallback(async () => {
+        const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (status !== 'granted') {
+            Alert.alert('Permission Needed', 'Photo library access is required to attach a document.');
+            return;
+        }
+        const result = await ImagePicker.launchImageLibraryAsync({
+            mediaTypes: ['images'],
+            quality: 0.65,
+            allowsMultipleSelection: false,
+        });
+        if (result.canceled || !result.assets?.[0]?.uri) return;
+        if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        attachDocument(result.assets[0].uri);
+    }, [attachDocument]);
+
+    const pickFromFiles = useCallback(async () => {
+        const result = await DocumentPicker.getDocumentAsync({
+            type: ['image/*', 'application/pdf'],
+            copyToCacheDirectory: true,
+            multiple: false,
+        });
+        if (result.canceled || !result.assets?.[0]?.uri) return;
+        const asset = result.assets[0];
+        const isPdf = asset.mimeType === 'application/pdf' || /\.pdf$/i.test(asset.name ?? '');
+        if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        attachDocument(asset.uri, isPdf ? 'application/pdf' : undefined);
+    }, [attachDocument]);
+
+    const handleAttach = useCallback(() => {
+        const options = ['Take Photo', 'Choose from Photos', 'Choose File', 'Cancel'];
+        const run = (index: number) => {
+            if (index === 0) void pickFromCamera();
+            else if (index === 1) void pickFromLibrary();
+            else if (index === 2) void pickFromFiles();
+        };
+        if (Platform.OS === 'ios') {
+            ActionSheetIOS.showActionSheetWithOptions(
+                { options, cancelButtonIndex: 3, title: 'Attach a document' },
+                run,
+            );
+        } else {
+            Alert.alert('Attach a document', undefined, [
+                { text: options[0], onPress: () => run(0) },
+                { text: options[1], onPress: () => run(1) },
+                { text: options[2], onPress: () => run(2) },
+                { text: 'Cancel', style: 'cancel' },
+            ]);
+        }
+    }, [pickFromCamera, pickFromLibrary, pickFromFiles]);
 
     const webTopInset = Platform.OS === 'web' ? 67 : 0;
 
@@ -791,9 +838,9 @@ function ConsultScreen() {
                 )}
 
                 <View style={[styles.inputWrapper, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-                    {/* Camera button */}
+                    {/* Attach button — camera, photo library, or a file (incl. PDF) */}
                     <Pressable
-                        onPress={handleCameraCapture}
+                        onPress={handleAttach}
                         disabled={isStreaming}
                         style={({ pressed }) => [
                             styles.cameraBtn,
@@ -801,7 +848,7 @@ function ConsultScreen() {
                         ]}
                     >
                         <Ionicons
-                            name="camera-outline"
+                            name="attach-outline"
                             size={22}
                             color={attachedDocument ? colors.accent : colors.textTertiary}
                         />

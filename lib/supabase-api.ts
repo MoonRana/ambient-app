@@ -451,6 +451,8 @@ export interface ExtractDocumentOptions {
   onProgress?: (phase: ExtractProgressPhase) => void;
   /** Request timeout ms — default 120000 */
   timeout?: number;
+  /** PDFs are uploaded as-is and read natively; images are resized to JPEG */
+  mimeType?: 'image/jpeg' | 'application/pdf';
 }
 
 export async function extractClinicalDocument(
@@ -462,12 +464,16 @@ export async function extractClinicalDocument(
   const timeout = options.timeout ?? 120000;
 
   let imageBase64: string;
-  const mimeType = 'image/jpeg';
+  const mimeType = options.mimeType ?? 'image/jpeg';
 
   options.onProgress?.('preparing');
 
   try {
-    if (Platform.OS === 'web') {
+    if (mimeType === 'application/pdf') {
+      imageBase64 = await FileSystem.readAsStringAsync(imageUri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+    } else if (Platform.OS === 'web') {
       const response = await fetch(imageUri);
       const blob = await response.blob();
       imageBase64 = await new Promise<string>((resolve, reject) => {
@@ -513,22 +519,34 @@ export async function extractClinicalDocument(
     }
   } catch (e: any) {
     console.warn('[extractClinicalDocument] Failed to encode image:', e?.message);
-    return null;
+    throw new Error("Couldn't read that file from your device. Please try selecting it again.");
   }
 
   options.onProgress?.('uploading');
 
   try {
-    const headers = await getAuthHeaders();
-    const response = await fetchWithTimeout(`${getBaseUrl()}/functions/v1/extract-document-info`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        image_base64: imageBase64,
-        mime_type: mimeType,
-        document_type: 'clinical',
-      }),
-    }, timeout);
+    const send = async () => {
+      const headers = await getAuthHeaders();
+      return fetchWithTimeout(`${getBaseUrl()}/functions/v1/extract-document-info`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          image_base64: imageBase64,
+          mime_type: mimeType,
+          document_type: 'clinical',
+        }),
+      }, timeout);
+    };
+
+    let response = await send();
+
+    // A stale access token fails identically to a bad photo from the user's side.
+    // Refresh once and retry before reporting anything.
+    if (response.status === 401) {
+      console.warn('[extractClinicalDocument] 401 — refreshing session and retrying');
+      await supabase.auth.refreshSession();
+      response = await send();
+    }
 
     options.onProgress?.('reading');
 
@@ -537,8 +555,9 @@ export async function extractClinicalDocument(
 
     if (!response.ok) {
       console.warn('[extractClinicalDocument] Non-200 response:', rawText.slice(0, 300));
-      // Surface the server's explanation — a generic "try a clearer photo" hides
-      // actionable causes like an unreadable HEIC image.
+      if (response.status === 401) {
+        throw new Error('Your session has expired. Please sign out and sign back in, then try again.');
+      }
       let serverError: string | null = null;
       try { serverError = JSON.parse(rawText)?.error ?? null; } catch { /* not JSON */ }
       throw new Error(serverError || `Extraction failed (${response.status}).`);

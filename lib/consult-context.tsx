@@ -49,7 +49,7 @@ interface ConsultContextValue {
     attachedDocument: string | null;
     isExtracting: boolean;
     extractPhase: ConsultExtractPhase;
-    attachDocument: (imageUri: string) => void;
+    attachDocument: (uri: string, mimeType?: 'application/pdf') => void;
     clearDocument: () => void;
     openFreestyle: () => void;
 }
@@ -152,12 +152,13 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
         attachedDocumentRef.current = null;
     }, [clearStreamTimeout]);
 
-    const runExtraction = useCallback(async (imageUri: string) => {
+    const runExtraction = useCallback(async (uri: string, mimeType?: 'application/pdf') => {
         setIsExtracting(true);
         setExtractPhase('preparing');
 
-        const promise = extractClinicalDocument(imageUri, {
+        const promise = extractClinicalDocument(uri, {
             ...CONSULT_EXTRACT_OPTS,
+            mimeType,
             onProgress: (phase) => setExtractPhase(phase),
         });
         extractPromiseRef.current = promise;
@@ -180,11 +181,11 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
         }
     }, []);
 
-    const attachDocument = useCallback((imageUri: string) => {
+    const attachDocument = useCallback((uri: string, mimeType?: 'application/pdf') => {
         void (async () => {
             const allowed = await ensureAIConsent();
             if (!allowed) return;
-            void runExtraction(imageUri);
+            void runExtraction(uri, mimeType);
         })();
     }, [runExtraction]);
 

@@ -25,7 +25,7 @@ interface ExtractedDocumentInfo {
   confidence: number;
 }
 
-const SUPPORTED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+const SUPPORTED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf'];
 
 /**
  * Identify an image from its leading bytes. Returns null when the signature is
@@ -56,6 +56,8 @@ function sniffImageType(base64: string): string | null {
     if (brand.startsWith('hei') || brand === 'mif1' || brand === 'msf1') return 'image/heic';
     if (brand.startsWith('avif') || brand === 'avis') return 'image/avif';
   }
+
+  if (ascii(0, 5) === '%PDF-') return 'application/pdf';
 
   return null;
 }
@@ -242,7 +244,7 @@ CRITICAL RULES:
           JSON.stringify({
             error: isHeic
               ? 'This photo is in Apple\'s HEIC format, which cannot be read. On your iPhone open Settings > Camera > Formats and choose "Most Compatible", then retake the photo.'
-              : `Unsupported image format: ${mediaType}. Please use JPEG, PNG, GIF, or WebP.`,
+              : `Unsupported file format: ${mediaType}. Please use a JPEG, PNG, GIF, WebP, or PDF.`,
           }),
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
@@ -264,14 +266,15 @@ CRITICAL RULES:
             {
               role: 'user',
               content: [
-                {
-                  type: 'image',
-                  source: {
-                    type: 'base64',
-                    media_type: mediaType,
-                    data: cleanBase64,
-                  },
-                },
+                mediaType === 'application/pdf'
+                  ? {
+                      type: 'document',
+                      source: { type: 'base64', media_type: 'application/pdf', data: cleanBase64 },
+                    }
+                  : {
+                      type: 'image',
+                      source: { type: 'base64', media_type: mediaType, data: cleanBase64 },
+                    },
                 {
                   type: 'text',
                   text: prompt,
