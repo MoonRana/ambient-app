@@ -497,8 +497,16 @@ export async function extractClinicalDocument(
         imageBase64 = await FileSystem.readAsStringAsync(manipulated.uri, {
           encoding: FileSystem.EncodingType.Base64,
         });
-      } catch {
-        imageBase64 = await FileSystem.readAsStringAsync(imageUri, {
+      } catch (resizeErr: any) {
+        console.warn('[extractClinicalDocument] Resize failed, converting without resize:', resizeErr?.message);
+        // Still force JPEG — reading the original would ship HEIC from an iPhone,
+        // which the extraction API cannot decode.
+        const converted = await ImageManipulator.manipulateAsync(
+          imageUri,
+          [],
+          { compress, format: ImageManipulator.SaveFormat.JPEG },
+        );
+        imageBase64 = await FileSystem.readAsStringAsync(converted.uri, {
           encoding: FileSystem.EncodingType.Base64,
         });
       }
@@ -529,7 +537,11 @@ export async function extractClinicalDocument(
 
     if (!response.ok) {
       console.warn('[extractClinicalDocument] Non-200 response:', rawText.slice(0, 300));
-      return null;
+      // Surface the server's explanation — a generic "try a clearer photo" hides
+      // actionable causes like an unreadable HEIC image.
+      let serverError: string | null = null;
+      try { serverError = JSON.parse(rawText)?.error ?? null; } catch { /* not JSON */ }
+      throw new Error(serverError || `Extraction failed (${response.status}).`);
     }
 
     let data: any;

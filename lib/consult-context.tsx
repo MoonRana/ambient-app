@@ -172,7 +172,7 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
             }
         } catch (e: any) {
             console.warn('[attachDocument] Failed:', e?.message);
-            Alert.alert('Scan Error', 'Failed to process document image.');
+            Alert.alert('Could Not Read Document', e?.message || 'Failed to process the document image.');
         } finally {
             setIsExtracting(false);
             setExtractPhase('idle');
