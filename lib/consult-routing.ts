@@ -38,3 +38,31 @@ export function routeToFreestyleWithDocument(documentText?: string | null): void
 
   router.push('/(tabs)/freestyle');
 }
+
+/**
+ * Hand Consult attachments to Freestyle as documents. Freestyle OCRs them
+ * server-side, so no client-side text extraction is needed.
+ */
+export function routeToFreestyleWithAttachments(
+  attachments: Array<{ uri: string; name: string; mimeType: 'image/jpeg' | 'application/pdf' }>,
+): void {
+  const store = useFreestyleStore.getState();
+  let workflowId = store.activeWorkflowId;
+  if (!workflowId || !store.workflows[workflowId]) {
+    workflowId = store.createWorkflow();
+  }
+
+  for (const a of attachments) {
+    const isPdf = a.mimeType === 'application/pdf';
+    store.addDocument(workflowId, {
+      uri: a.uri,
+      name: a.name,
+      type: isPdf ? 'pdf' : 'image',
+      sizeBytes: 0,
+      thumbnailUri: isPdf ? undefined : a.uri,
+      label: 'From Consult',
+    });
+  }
+
+  router.push('/(tabs)/freestyle');
+}

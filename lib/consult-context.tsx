@@ -5,23 +5,47 @@ import React, {
 import {
     fetchSpecialties,
     streamClinicalQA,
-    extractClinicalDocument,
-    type ExtractProgressPhase,
+    prepareAttachmentBase64,
+    type ConsultAttachmentPayload,
     Specialty,
     ConsultSource,
     ConsultMetrics,
 } from './supabase-api';
 import { Alert } from 'react-native';
 import { ensureAIConsent } from './ai-consent';
-import { isNoteGenerationRequest, routeToFreestyleWithDocument } from './consult-routing';
+import {
+    isNoteGenerationRequest,
+    routeToFreestyleWithDocument,
+    routeToFreestyleWithAttachments,
+} from './consult-routing';
 import { supabase } from './supabase';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+export type ConsultAttachmentMime = 'image/jpeg' | 'application/pdf';
+
+/** A photo or PDF the clinician has attached to the next question. */
+export interface ConsultAttachment {
+    id: string;
+    uri: string;
+    mimeType: ConsultAttachmentMime;
+    name: string;
+    status: 'preparing' | 'ready' | 'failed';
+    base64?: string;
+}
+
+export interface ConsultMessageAttachment {
+    id: string;
+    uri: string;
+    mimeType: ConsultAttachmentMime;
+    name: string;
+}
 
 export interface ConsultMessage {
     id: string;
     role: 'user' | 'assistant';
     content: string;
+    attachments?: ConsultMessageAttachment[];
     streaming?: boolean;
     stopped?: boolean;
     metadata?: {
@@ -34,8 +58,6 @@ export interface ConsultMessage {
     error?: string;
 }
 
-export type ConsultExtractPhase = ExtractProgressPhase | 'idle' | 'waiting';
-
 interface ConsultContextValue {
     messages: ConsultMessage[];
     isStreaming: boolean;
@@ -46,11 +68,11 @@ interface ConsultContextValue {
     sendQuestion: (text: string) => void;
     stopStreaming: () => void;
     newCase: () => void;
-    attachedDocument: string | null;
-    isExtracting: boolean;
-    extractPhase: ConsultExtractPhase;
-    attachDocument: (uri: string, mimeType?: 'application/pdf') => void;
-    clearDocument: () => void;
+    attachments: ConsultAttachment[];
+    isPreparingAttachments: boolean;
+    addAttachment: (uri: string, opts?: { mimeType?: ConsultAttachmentMime; name?: string }) => void;
+    removeAttachment: (id: string) => void;
+    clearAttachments: () => void;
     openFreestyle: () => void;
 }
 
@@ -60,13 +82,14 @@ function uid() {
     return Date.now().toString(36) + Math.random().toString(36).slice(2);
 }
 
-const CONSULT_EXTRACT_OPTS = {
-    maxWidth: 800,
-    compress: 0.5,
-    timeout: 60_000,
-};
+export const MAX_CONSULT_ATTACHMENTS = 6;
+
+// Legible enough for a lab table; well under Anthropic's per-image ceiling.
+const ATTACHMENT_PREP = { maxWidth: 1200, compress: 0.6 };
 
 const CONSULT_STREAM_TIMEOUT_MS = 120_000;
+
+const DEFAULT_ATTACHMENT_QUESTION = 'Please review and interpret the attached document(s).';
 
 export function ConsultProvider({ children }: { children: ReactNode }) {
     const [messages, setMessages] = useState<ConsultMessage[]>([]);
@@ -113,15 +136,71 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
         }));
     }, [finalizeStreamingMessage, isStreaming]);
 
-    const [attachedDocument, setAttachedDocument] = useState<string | null>(null);
-    const [isExtracting, setIsExtracting] = useState(false);
-    const [extractPhase, setExtractPhase] = useState<ConsultExtractPhase>('idle');
-    const attachedDocumentRef = useRef<string | null>(null);
-    const extractPromiseRef = useRef<Promise<string | null> | null>(null);
+    // ── Attachments ──────────────────────────────────────────────────────────
+    // No extraction gate: files are resized on-device and sent with the question,
+    // and the model reads them directly. The only thing that can fail here is
+    // reading the file itself.
 
-    useEffect(() => {
-        attachedDocumentRef.current = attachedDocument;
-    }, [attachedDocument]);
+    const [attachments, setAttachments] = useState<ConsultAttachment[]>([]);
+    const attachmentsRef = useRef<ConsultAttachment[]>([]);
+    const prepPromisesRef = useRef<Map<string, Promise<void>>>(new Map());
+
+    const commitAttachments = useCallback((next: ConsultAttachment[]) => {
+        attachmentsRef.current = next;
+        setAttachments(next);
+    }, []);
+
+    const patchAttachment = useCallback((id: string, patch: Partial<ConsultAttachment>) => {
+        commitAttachments(attachmentsRef.current.map(a => (a.id === id ? { ...a, ...patch } : a)));
+    }, [commitAttachments]);
+
+    const removeAttachment = useCallback((id: string) => {
+        commitAttachments(attachmentsRef.current.filter(a => a.id !== id));
+        prepPromisesRef.current.delete(id);
+    }, [commitAttachments]);
+
+    const clearAttachments = useCallback(() => {
+        commitAttachments([]);
+        prepPromisesRef.current.clear();
+    }, [commitAttachments]);
+
+    const addAttachment = useCallback((uri: string, opts?: { mimeType?: ConsultAttachmentMime; name?: string }) => {
+        void (async () => {
+            const allowed = await ensureAIConsent();
+            if (!allowed) return;
+
+            if (attachmentsRef.current.length >= MAX_CONSULT_ATTACHMENTS) {
+                Alert.alert('Attachment limit', `You can attach up to ${MAX_CONSULT_ATTACHMENTS} documents per question.`);
+                return;
+            }
+
+            const id = uid();
+            const mimeType = opts?.mimeType ?? 'image/jpeg';
+            const name = opts?.name?.trim() || (mimeType === 'application/pdf' ? 'Document.pdf' : 'Photo');
+            commitAttachments([...attachmentsRef.current, { id, uri, mimeType, name, status: 'preparing' }]);
+
+            const prep = (async () => {
+                try {
+                    const base64 = await prepareAttachmentBase64(uri, { ...ATTACHMENT_PREP, mimeType });
+                    patchAttachment(id, { status: 'ready', base64 });
+                } catch (e: any) {
+                    console.warn('[addAttachment] Failed:', e?.message);
+                    removeAttachment(id);
+                    Alert.alert('Could Not Attach', e?.message || 'That file could not be read.');
+                } finally {
+                    prepPromisesRef.current.delete(id);
+                }
+            })();
+            prepPromisesRef.current.set(id, prep);
+        })();
+    }, [commitAttachments, patchAttachment, removeAttachment]);
+
+    const isPreparingAttachments = useMemo(
+        () => attachments.some(a => a.status === 'preparing'),
+        [attachments],
+    );
+
+    // ── Lifecycle ────────────────────────────────────────────────────────────
 
     useEffect(() => {
         void supabase.auth.getSession();
@@ -148,89 +227,46 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
         historyRef.current = [];
         setMessages([]);
         setIsStreaming(false);
-        setAttachedDocument(null);
-        attachedDocumentRef.current = null;
-    }, [clearStreamTimeout]);
-
-    const runExtraction = useCallback(async (uri: string, mimeType?: 'application/pdf') => {
-        setIsExtracting(true);
-        setExtractPhase('preparing');
-
-        const promise = extractClinicalDocument(uri, {
-            ...CONSULT_EXTRACT_OPTS,
-            mimeType,
-            onProgress: (phase) => setExtractPhase(phase),
-        });
-        extractPromiseRef.current = promise;
-
-        try {
-            const extractedText = await promise;
-            if (extractedText) {
-                setAttachedDocument(extractedText);
-                attachedDocumentRef.current = extractedText;
-            } else {
-                Alert.alert('Extraction Failed', 'Could not read the document. Please try again with a clearer photo.');
-            }
-        } catch (e: any) {
-            console.warn('[attachDocument] Failed:', e?.message);
-            Alert.alert('Could Not Read Document', e?.message || 'Failed to process the document image.');
-        } finally {
-            setIsExtracting(false);
-            setExtractPhase('idle');
-            extractPromiseRef.current = null;
-        }
-    }, []);
-
-    const attachDocument = useCallback((uri: string, mimeType?: 'application/pdf') => {
-        void (async () => {
-            const allowed = await ensureAIConsent();
-            if (!allowed) return;
-            void runExtraction(uri, mimeType);
-        })();
-    }, [runExtraction]);
-
-    const clearDocument = useCallback(() => {
-        setAttachedDocument(null);
-        attachedDocumentRef.current = null;
-    }, []);
+        clearAttachments();
+    }, [clearStreamTimeout, clearAttachments]);
 
     const openFreestyle = useCallback(() => {
-        routeToFreestyleWithDocument(attachedDocumentRef.current);
-    }, []);
-
-    const resolveAttachedDocument = useCallback(async (): Promise<string | null> => {
-        if (attachedDocumentRef.current) return attachedDocumentRef.current;
-        if (extractPromiseRef.current) {
-            setExtractPhase('waiting');
-            try {
-                const text = await extractPromiseRef.current;
-                if (text) {
-                    setAttachedDocument(text);
-                    attachedDocumentRef.current = text;
-                }
-                return text;
-            } finally {
-                if (!extractPromiseRef.current) {
-                    setExtractPhase('idle');
-                }
-            }
+        const current = attachmentsRef.current;
+        if (current.length > 0) {
+            routeToFreestyleWithAttachments(current);
+            clearAttachments();
+        } else {
+            routeToFreestyleWithDocument(null);
         }
-        return null;
-    }, []);
+    }, [clearAttachments]);
+
+    // ── Ask ──────────────────────────────────────────────────────────────────
 
     const proceedWithQuestion = useCallback(async (text: string) => {
-        const [doc] = await Promise.all([
-            resolveAttachedDocument(),
-            supabase.auth.getSession(),
-        ]);
-        const userMsg: ConsultMessage = { id: uid(), role: 'user', content: text.trim() };
+        // On-device resize is quick; wait for any still in flight rather than dropping them.
+        await Promise.all(
+            attachmentsRef.current
+                .map(a => prepPromisesRef.current.get(a.id))
+                .filter((p): p is Promise<void> => !!p),
+        );
+        await supabase.auth.getSession();
 
-        let enrichedQuestion = text.trim();
-        if (doc) {
-            enrichedQuestion =
-                `**Scanned Clinical Document:**\n${doc}\n\n` +
-                `**Question:** ${text.trim()}`;
-        }
+        const ready = attachmentsRef.current.filter(a => a.status === 'ready' && !!a.base64);
+        const questionText = text.trim() || (ready.length > 0 ? DEFAULT_ATTACHMENT_QUESTION : '');
+        if (!questionText) return;
+
+        const payloadAttachments: ConsultAttachmentPayload[] = ready.map(a => ({
+            media_type: a.mimeType,
+            data: a.base64!,
+            name: a.name,
+        }));
+
+        const userMsg: ConsultMessage = {
+            id: uid(),
+            role: 'user',
+            content: text.trim(),
+            attachments: ready.map(({ id, uri, mimeType, name }) => ({ id, uri, mimeType, name })),
+        };
 
         const assistantId = uid();
         const assistantMsg: ConsultMessage = {
@@ -245,7 +281,7 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
 
         const history = [
             ...historyRef.current,
-            { role: 'user' as const, content: text.trim() },
+            { role: 'user' as const, content: questionText },
         ].slice(-8);
 
         // Batch token updates (~30fps) to avoid re-rendering the whole list per chunk
@@ -281,9 +317,10 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
 
         const controller = streamClinicalQA(
             {
-                question: enrichedQuestion,
+                question: questionText,
                 specialty_id: selectedSpecialty,
                 conversation_history: history,
+                attachments: payloadAttachments,
             },
             {
                 onMetadata(guidelines, webSources, pubmedSources, metrics) {
@@ -346,12 +383,13 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
             clearStreamTimeout();
             setIsStreaming(false);
         }, CONSULT_STREAM_TIMEOUT_MS);
-        setAttachedDocument(null);
-        attachedDocumentRef.current = null;
-    }, [selectedSpecialty, resolveAttachedDocument, clearStreamTimeout, finalizeStreamingMessage]);
+
+        clearAttachments();
+    }, [selectedSpecialty, clearStreamTimeout, clearAttachments]);
 
     const sendQuestion = useCallback(async (text: string) => {
-        if (isStreaming || !text.trim()) return;
+        if (isStreaming) return;
+        if (!text.trim() && attachmentsRef.current.length === 0) return;
 
         const allowed = await ensureAIConsent();
         if (!allowed) return;
@@ -362,13 +400,7 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
                 'STAT Consult answers clinical questions. To build an H&P or SOAP note from labs and documents, use Freestyle.',
                 [
                     { text: 'Cancel', style: 'cancel' },
-                    {
-                        text: 'Open Freestyle',
-                        onPress: async () => {
-                            const doc = await resolveAttachedDocument();
-                            routeToFreestyleWithDocument(doc);
-                        },
-                    },
+                    { text: 'Open Freestyle', onPress: openFreestyle },
                     { text: 'Ask here anyway', onPress: () => proceedWithQuestion(text) },
                 ],
             );
@@ -376,7 +408,7 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
         }
 
         await proceedWithQuestion(text);
-    }, [isStreaming, proceedWithQuestion, resolveAttachedDocument]);
+    }, [isStreaming, proceedWithQuestion, openFreestyle]);
 
     const value = useMemo<ConsultContextValue>(() => ({
         messages,
@@ -388,16 +420,16 @@ export function ConsultProvider({ children }: { children: ReactNode }) {
         sendQuestion,
         stopStreaming,
         newCase,
-        attachedDocument,
-        isExtracting,
-        extractPhase,
-        attachDocument,
-        clearDocument,
+        attachments,
+        isPreparingAttachments,
+        addAttachment,
+        removeAttachment,
+        clearAttachments,
         openFreestyle,
     }), [
         messages, isStreaming, selectedSpecialty, specialties, specialtiesLoading,
-        sendQuestion, stopStreaming, newCase, attachedDocument, isExtracting, extractPhase,
-        attachDocument, clearDocument, openFreestyle,
+        sendQuestion, stopStreaming, newCase, attachments, isPreparingAttachments,
+        addAttachment, removeAttachment, clearAttachments, openFreestyle,
     ]);
 
     return (

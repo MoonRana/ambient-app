@@ -2,6 +2,12 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.3';
 import { assertAnthropicModelsValid } from "../_shared/validate-anthropic-models.ts";
 import { requireUser } from "../_shared/auth.ts";
+import {
+  sniffMediaType,
+  SUPPORTED_ATTACHMENT_TYPES,
+  MAX_ATTACHMENTS,
+  MAX_ATTACHMENT_BASE64_CHARS,
+} from "../_shared/media.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -13,6 +19,13 @@ interface ConversationMessage {
   content: string;
 }
 
+/** A photo or PDF sent with the question. Read by the model directly — no extraction step. */
+interface AttachmentInput {
+  media_type: string;
+  data: string;
+  name?: string;
+}
+
 interface ClinicalQARequest {
   question: string;
   specialty_id?: string;
@@ -21,6 +34,74 @@ interface ClinicalQARequest {
   // "fast" (default) = RAG only, ~1.5s budget, Haiku model → first token <2s
   // "thorough" = full RAG + Firecrawl + PubMed, Sonnet model → deep evidence synthesis
   mode?: 'fast' | 'thorough';
+  attachments?: AttachmentInput[];
+}
+
+// Without this the model refuses ordinary clinician phrasing ("a friend had this
+// panel, analyze it") as a HIPAA violation. It is accurate: attachments require a
+// signed-in account, and reviewing patient documents is the tool's intended use.
+const CLINICIAN_CONTEXT = `CLINICAL CONTEXT
+You are operating inside DoMyNote, a HIPAA-compliant clinical decision-support tool used by licensed clinicians. The user is a signed-in clinician; documents they attach — including patient-identifiable labs, notes, or reports — are shared for legitimate clinical care and review, and interpreting them is the authorized purpose of this tool.
+- Do not refuse, withhold interpretation, or lecture about privacy: the clinician is responsible for their authorization to view the record.
+- Clinicians often use casual shorthand such as "a friend had this panel" or "someone sent me these labs". Treat it as a clinical review request and answer it fully.
+- You may reference patient identifiers exactly as they appear in the document when asked; never add identifiers that are not in the document.`;
+
+const ATTACHMENT_ADDENDUM = `ATTACHED DOCUMENTS
+The clinician has attached one or more clinical documents (photos or PDFs of lab panels, imaging reports, medication lists, notes, or vitals). Read them directly — you can see them. Never say you cannot view images.
+- Under "Assumptions", first state what each document is and list its key values. Flag every value outside the reference range printed on the document and say by how much.
+- Photographs of screens or paper may have glare, skew, or partial cropping: read what is legible, and explicitly name any values you cannot read rather than guessing.
+- Ground the answer in the document's actual values. Use retrieved evidence where it applies; if no evidence was retrieved, cite only well-established guidelines you are confident exist, and keep the References section short rather than inventing citations.`;
+
+function toContentBlock(a: AttachmentInput) {
+  return a.media_type === 'application/pdf'
+    ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: a.data } }
+    : { type: 'image', source: { type: 'base64', media_type: a.media_type, data: a.data } };
+}
+
+/**
+ * With attachments the question is often just "interpret this", which is useless
+ * as a guideline search string. Ask Haiku for a one-line topic from the document
+ * itself. Best-effort and bounded: any failure falls back to the question alone.
+ */
+async function deriveRetrievalQuery(apiKey: string, question: string, attachments: AttachmentInput[]): Promise<string> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 4000);
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      signal: ctrl.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5',
+        max_tokens: 120,
+        messages: [{
+          role: 'user',
+          content: [
+            ...attachments.map(toContentBlock),
+            {
+              type: 'text',
+              text: `A clinician asked: "${question}"\n\nIn one line (max 25 words), state the clinical topic and any abnormal findings in the attached document(s), phrased as a search query for clinical guidelines. Output only that line.`,
+            },
+          ],
+        }],
+      }),
+    });
+    if (!resp.ok) return question;
+    const data = await resp.json();
+    const line = data.content?.[0]?.text?.trim();
+    if (!line) return question;
+    console.log(`[clinical-qa] retrieval query from attachments: ${line}`);
+    return `${question} ${line}`.trim();
+  } catch (e) {
+    console.warn('[clinical-qa] retrieval hint skipped:', (e as Error)?.message);
+    return question;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 const STRUCTURED_PROMPT = `You are an expert clinical decision support assistant modeled after UpToDate. Your responses must follow this exact structured format for every clinical question:
@@ -96,7 +177,6 @@ serve(async (req) => {
   } catch (_authError) {
     caller = null;
   }
-  void caller;
 
 
 
@@ -119,19 +199,49 @@ serve(async (req) => {
       }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    const { question, specialty_id, stream = true, conversation_history = [], mode = 'thorough' } = body;
+    const { specialty_id, stream = true, conversation_history = [], mode = 'thorough', attachments: rawAttachments = [] } = body;
+    let question = typeof body.question === 'string' ? body.question.trim() : '';
 
-    if (!question || typeof question !== 'string' || !question.trim()) {
-      return new Response(JSON.stringify({
-        success: false,
-        error: 'Question is required.',
-        answer: null,
-        guidelines: [],
-        pubmedSources: [],
-      }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    const bad = (error: string, status = 400) => new Response(JSON.stringify({
+      success: false, error, answer: null, guidelines: [], pubmedSources: [],
+    }), { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+
+    if (!Array.isArray(rawAttachments)) return bad('attachments must be an array.');
+    if (rawAttachments.length > MAX_ATTACHMENTS) {
+      return bad(`You can attach up to ${MAX_ATTACHMENTS} documents per question.`);
     }
 
-    console.log(`Clinical Q&A request: "${question.substring(0, 100)}..." (mode: ${mode}, specialty: ${specialty_id || 'all'}, streaming: ${stream}, history: ${conversation_history.length} msgs)`);
+    // Plain questions may be anonymous; attachments are PHI and need a signed-in caller.
+    if (rawAttachments.length > 0 && !caller) {
+      return bad('Please sign in to attach documents.', 401);
+    }
+
+    const attachments: AttachmentInput[] = [];
+    for (const [i, a] of rawAttachments.entries()) {
+      const data = typeof a?.data === 'string' ? a.data.replace(/^data:[^,]+,/, '').replace(/\s/g, '') : '';
+      if (!data) return bad(`Attachment ${i + 1} is empty.`);
+      if (data.length > MAX_ATTACHMENT_BASE64_CHARS) {
+        return bad(`Attachment ${i + 1} is too large. Please use a smaller photo or a shorter PDF.`, 413);
+      }
+      // Trust the bytes over the declared type — HEIC mislabelled as JPEG is the classic failure.
+      const sniffed = sniffMediaType(data);
+      const media_type = sniffed ?? (typeof a?.media_type === 'string' ? a.media_type.toLowerCase() : 'image/jpeg');
+      if (!SUPPORTED_ATTACHMENT_TYPES.includes(media_type)) {
+        const isHeic = media_type === 'image/heic' || media_type === 'image/heif';
+        return bad(isHeic
+          ? "This photo is in Apple's HEIC format, which cannot be read. On your iPhone open Settings > Camera > Formats and choose \"Most Compatible\", then retake the photo."
+          : `Attachment ${i + 1} has an unsupported format (${media_type}). Please use a JPEG, PNG, GIF, WebP, or PDF.`);
+      }
+      attachments.push({ media_type, data, name: typeof a?.name === 'string' ? a.name : undefined });
+    }
+    const hasAttachments = attachments.length > 0;
+
+    if (!question) {
+      if (!hasAttachments) return bad('Question is required.');
+      question = 'Please review and interpret the attached clinical document(s).';
+    }
+
+    console.log(`Clinical Q&A request: "${question.substring(0, 100)}..." (mode: ${mode}, specialty: ${specialty_id || 'all'}, streaming: ${stream}, history: ${conversation_history.length} msgs, attachments: ${attachments.length})`);
 
     const anthropicApiKey = Deno.env.get('ANTHROPIC_API_KEY');
     if (!anthropicApiKey) {
@@ -144,11 +254,15 @@ serve(async (req) => {
 
     // Step 1: Run RAG (and in thorough mode, Firecrawl) with bounded budgets.
     // Fast mode = clinic use: RAG only, ≤1.5s budget. Speed beats web evidence in-room.
+    const retrievalQuery = hasAttachments
+      ? await deriveRetrievalQuery(anthropicApiKey, question, attachments)
+      : question;
+
     console.log(`Starting retrieval (mode=${mode})...`);
     const retrievalStart = Date.now();
 
     const ragBody: any = {
-      query: question,
+      query: retrievalQuery,
       top_k: mode === 'thorough' ? 10 : 5,
       similarity_threshold: 0.50
     };
@@ -169,7 +283,7 @@ serve(async (req) => {
       ? Promise.race([
           supabase.functions.invoke('firecrawl-search', {
             body: {
-              query: `${question} clinical guidelines site:acc.org OR site:idsociety.org OR site:kdigo.org OR site:chestnet.org OR site:aha.org OR site:aan.com OR site:endocrine.org OR site:ncbi.nlm.nih.gov/books`,
+              query: `${retrievalQuery} clinical guidelines site:acc.org OR site:idsociety.org OR site:kdigo.org OR site:chestnet.org OR site:aha.org OR site:aan.com OR site:endocrine.org OR site:ncbi.nlm.nih.gov/books`,
               options: { limit: 3 },
             },
           }),
@@ -219,7 +333,7 @@ serve(async (req) => {
         console.log('Still insufficient coverage, attempting PubMed search...');
         try {
           const { data: pubmedData, error: pubmedError } = await supabase.functions.invoke('pubmed-search', {
-            body: { query: question, maxResults: 5 }
+            body: { query: retrievalQuery, maxResults: 5 }
           });
           if (!pubmedError && pubmedData?.results) {
             pubmedResults = pubmedData.results;
@@ -284,7 +398,9 @@ serve(async (req) => {
 
     // Only return early if no context AND no conversation history
     // If there's conversation history, the AI can still answer follow-up questions
-    if (!context && conversation_history.length === 0) {
+    // With an attachment the model answers from the document itself — never short-circuit
+    // to the canned "no guidelines found" JSON, which would also break the SSE contract.
+    if (!context && conversation_history.length === 0 && !hasAttachments) {
       const noContextResponse = {
         success: true,
         answer: `## Clinical Response: ${question.substring(0, 50)}...
@@ -330,7 +446,23 @@ ${context}
 
 ---` : '\n\n(No new guideline context retrieved for this follow-up question - using conversation history)\n';
 
-    // Note: prompt variable no longer used - messages are constructed inline with contextSection
+    const systemPrompt = [CLINICIAN_CONTEXT, STRUCTURED_PROMPT, hasAttachments ? ATTACHMENT_ADDENDUM : '']
+      .filter(Boolean)
+      .join('\n\n');
+    const userText = `Clinical Question: ${question}
+${contextSection}
+Generate a comprehensive, structured clinical response following the exact format specified. Use the evidence provided (if any) and consider the prior conversation context when answering follow-up questions.`;
+
+    // Attachments ride on the current turn only; history stays text so it serializes as-is.
+    const buildMessages = () => [
+      ...conversation_history.map(msg => ({ role: msg.role, content: msg.content })),
+      {
+        role: 'user',
+        content: hasAttachments
+          ? [...attachments.map(toContentBlock), { type: 'text', text: userText }]
+          : userText,
+      },
+    ];
 
     // Step 3: Generate response with streaming
     if (stream) {
@@ -339,7 +471,7 @@ ${context}
 
       const abortCtrl = new AbortController();
       const abortTimer = setTimeout(() => abortCtrl.abort(), 60000);
-      const activeModel = mode === 'thorough' ? 'claude-sonnet-4-5' : 'claude-haiku-4-5';
+      const activeModel = hasAttachments || mode === 'thorough' ? 'claude-sonnet-4-5' : 'claude-haiku-4-5';
       console.log(`[clinical-qa] calling Anthropic model=${activeModel}`);
 
       let anthropicResponse: Response;
@@ -356,19 +488,8 @@ ${context}
             model: activeModel,
             max_tokens: 8192,
             stream: true,
-            system: STRUCTURED_PROMPT,
-            messages: [
-              ...conversation_history.map(msg => ({
-                role: msg.role,
-                content: msg.content
-              })),
-              {
-                role: 'user',
-                content: `Clinical Question: ${question}
-${contextSection}
-Generate a comprehensive, structured clinical response following the exact format specified. Use the evidence provided (if any) and consider the prior conversation context when answering follow-up questions.`,
-              },
-            ],
+            system: systemPrompt,
+            messages: buildMessages(),
           }),
         });
       } catch (e) {
@@ -502,23 +623,10 @@ Generate a comprehensive, structured clinical response following the exact forma
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: mode === 'thorough' ? 'claude-sonnet-4-5' : 'claude-haiku-4-5',
+        model: hasAttachments || mode === 'thorough' ? 'claude-sonnet-4-5' : 'claude-haiku-4-5',
         max_tokens: 8192,
-        system: STRUCTURED_PROMPT,
-        messages: [
-          // Include conversation history for context
-          ...conversation_history.map(msg => ({
-            role: msg.role,
-            content: msg.content
-          })),
-          // Add current question with RAG context
-          {
-            role: 'user',
-            content: `Clinical Question: ${question}
-${contextSection}
-Generate a comprehensive, structured clinical response following the exact format specified. Use the evidence provided (if any) and consider the prior conversation context when answering follow-up questions.`,
-          },
-        ],
+        system: systemPrompt,
+        messages: buildMessages(),
       }),
     });
 

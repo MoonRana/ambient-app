@@ -6,6 +6,7 @@ import {
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
+import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -16,21 +17,9 @@ import Animated, {
 import Markdown from 'react-native-markdown-display';
 import { useThemeColors } from '@/constants/colors';
 import { useEffectiveColorScheme } from '@/lib/settings-context';
-import { ConsultProvider, useConsult, ConsultMessage, type ConsultExtractPhase } from '@/lib/consult-context';
+import { ConsultProvider, useConsult, ConsultMessage } from '@/lib/consult-context';
 import { ConsultSource, ConsultMetrics } from '@/lib/supabase-api';
 import CmeClaimChip from '@/components/cme/CmeClaimChip';
-
-// ─── Extract progress copy ────────────────────────────────────────────────────
-
-function extractPhaseLabel(phase: ConsultExtractPhase): string {
-    switch (phase) {
-        case 'preparing': return 'Preparing image…';
-        case 'uploading': return 'Uploading document…';
-        case 'reading': return 'Reading document…';
-        case 'waiting': return 'Finishing scan…';
-        default: return 'Scanning document…';
-    }
-}
 
 // ─── Typing indicator dots ────────────────────────────────────────────────────
 
@@ -256,7 +245,20 @@ const MessageBubble = memo(function MessageBubble({
         return (
             <Animated.View entering={FadeIn.duration(200)} style={styles.userBubbleRow}>
                 <View style={[styles.userBubble, { backgroundColor: colors.tint }]}>
-                    <Text style={styles.userBubbleText}>{message.content}</Text>
+                    {!!message.attachments?.length && (
+                        <View style={styles.bubbleThumbRow}>
+                            {message.attachments.map((a) => (
+                                a.mimeType === 'application/pdf' ? (
+                                    <View key={a.id} style={[styles.bubbleThumb, styles.bubbleThumbPdf]}>
+                                        <Ionicons name="document-text" size={22} color="#fff" />
+                                    </View>
+                                ) : (
+                                    <Image key={a.id} source={{ uri: a.uri }} style={styles.bubbleThumb} contentFit="cover" />
+                                )
+                            ))}
+                        </View>
+                    )}
+                    {!!message.content && <Text style={styles.userBubbleText}>{message.content}</Text>}
                 </View>
             </Animated.View>
         );
@@ -411,11 +413,10 @@ function ConsultScreen() {
         sendQuestion,
         stopStreaming,
         newCase,
-        attachedDocument,
-        isExtracting,
-        extractPhase,
-        attachDocument,
-        clearDocument,
+        attachments,
+        isPreparingAttachments,
+        addAttachment,
+        removeAttachment,
         openFreestyle,
     } = useConsult();
 
@@ -492,9 +493,12 @@ function ConsultScreen() {
         stopStreaming();
     }, [stopStreaming]);
 
+    const hasReadyAttachment = attachments.some(a => a.status === 'ready');
+    const canSend = input.trim().length > 0 || hasReadyAttachment;
+
     const handleSend = useCallback(() => {
         const text = input.trim();
-        if (!text || isStreaming) return;
+        if ((!text && !hasReadyAttachment) || isStreaming) return;
         if (Platform.OS !== 'web') {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
         }
@@ -502,7 +506,7 @@ function ConsultScreen() {
         setInput('');
         inputRef.current?.blur();
         scrollToBottom();
-    }, [input, isStreaming, sendQuestion, scrollToBottom]);
+    }, [input, hasReadyAttachment, isStreaming, sendQuestion, scrollToBottom]);
 
     const handleNewCase = useCallback(() => {
         if (Platform.OS !== 'web') {
@@ -534,11 +538,11 @@ function ConsultScreen() {
             Alert.alert('Permission Needed', 'Camera access is required to photograph documents.');
             return;
         }
-        const result = await ImagePicker.launchCameraAsync({ quality: 0.65, allowsEditing: false });
+        const result = await ImagePicker.launchCameraAsync({ quality: 0.8, allowsEditing: false });
         if (result.canceled || !result.assets?.[0]?.uri) return;
         if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        attachDocument(result.assets[0].uri);
-    }, [attachDocument]);
+        addAttachment(result.assets[0].uri, { name: result.assets[0].fileName ?? undefined });
+    }, [addAttachment]);
 
     const pickFromLibrary = useCallback(async () => {
         const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -548,26 +552,31 @@ function ConsultScreen() {
         }
         const result = await ImagePicker.launchImageLibraryAsync({
             mediaTypes: ['images'],
-            quality: 0.65,
-            allowsMultipleSelection: false,
+            quality: 0.8,
+            allowsMultipleSelection: true,
+            selectionLimit: 6,
         });
-        if (result.canceled || !result.assets?.[0]?.uri) return;
+        if (result.canceled || !result.assets?.length) return;
         if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        attachDocument(result.assets[0].uri);
-    }, [attachDocument]);
+        for (const asset of result.assets) {
+            if (asset.uri) addAttachment(asset.uri, { name: asset.fileName ?? undefined });
+        }
+    }, [addAttachment]);
 
     const pickFromFiles = useCallback(async () => {
         const result = await DocumentPicker.getDocumentAsync({
             type: ['image/*', 'application/pdf'],
             copyToCacheDirectory: true,
-            multiple: false,
+            multiple: true,
         });
-        if (result.canceled || !result.assets?.[0]?.uri) return;
-        const asset = result.assets[0];
-        const isPdf = asset.mimeType === 'application/pdf' || /\.pdf$/i.test(asset.name ?? '');
+        if (result.canceled || !result.assets?.length) return;
         if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        attachDocument(asset.uri, isPdf ? 'application/pdf' : undefined);
-    }, [attachDocument]);
+        for (const asset of result.assets) {
+            if (!asset.uri) continue;
+            const isPdf = asset.mimeType === 'application/pdf' || /\.pdf$/i.test(asset.name ?? '');
+            addAttachment(asset.uri, { mimeType: isPdf ? 'application/pdf' : undefined, name: asset.name });
+        }
+    }, [addAttachment]);
 
     const handleAttach = useCallback(() => {
         const options = ['Take Photo', 'Choose from Photos', 'Choose File', 'Cancel'];
@@ -783,38 +792,35 @@ function ConsultScreen() {
                     backgroundColor: colors.background,
                 },
             ]}>
-                {/* Attachment banner */}
-                {attachedDocument && (
-                    <Animated.View
-                        entering={FadeInDown.duration(200)}
-                        style={[
-                            styles.attachBanner,
-                            { backgroundColor: `${colors.accent}12`, borderColor: colors.accent },
-                        ]}
-                    >
-                        <Ionicons name="document-text" size={16} color={colors.accent} />
-                        <Text
-                            style={[styles.attachText, { color: colors.accent }]}
-                            numberOfLines={2}
-                        >
-                            Clinical document attached
-                        </Text>
-                        <Pressable onPress={clearDocument} hitSlop={8}>
-                            <Ionicons name="close-circle" size={18} color={colors.textTertiary} />
-                        </Pressable>
-                    </Animated.View>
-                )}
-
-                {/* Extracting indicator */}
-                {isExtracting && (
-                    <View style={[styles.extractingBar, { backgroundColor: colors.surfaceSecondary }]}>
-                        <ActivityIndicator size="small" color={colors.tint} />
-                        <Text style={[styles.extractingText, { color: colors.textSecondary }]}>
-                            {extractPhaseLabel(extractPhase)}
-                        </Text>
-                        <Text style={[styles.extractingHint, { color: colors.textTertiary }]}>
-                            You can type your question while we scan
-                        </Text>
+                {/* Attachments — removable thumbnails, ChatGPT-style */}
+                {attachments.length > 0 && (
+                    <View style={styles.attachStrip}>
+                        {attachments.map((a) => (
+                            <Animated.View key={a.id} entering={FadeInDown.duration(200)} style={styles.attachThumbWrap}>
+                                {a.mimeType === 'application/pdf' ? (
+                                    <View style={[styles.attachThumb, styles.attachThumbPdf, { backgroundColor: `${colors.tint}15`, borderColor: colors.border }]}>
+                                        <Ionicons name="document-text" size={22} color={colors.tint} />
+                                        <Text style={[styles.attachThumbName, { color: colors.textSecondary }]} numberOfLines={1}>
+                                            {a.name}
+                                        </Text>
+                                    </View>
+                                ) : (
+                                    <Image source={{ uri: a.uri }} style={[styles.attachThumb, { borderColor: colors.border }]} contentFit="cover" />
+                                )}
+                                {a.status === 'preparing' && (
+                                    <View style={styles.attachThumbOverlay}>
+                                        <ActivityIndicator size="small" color="#fff" />
+                                    </View>
+                                )}
+                                <Pressable
+                                    onPress={() => removeAttachment(a.id)}
+                                    style={[styles.attachRemove, { backgroundColor: colors.recording }]}
+                                    hitSlop={8}
+                                >
+                                    <Ionicons name="close" size={12} color="#fff" />
+                                </Pressable>
+                            </Animated.View>
+                        ))}
                     </View>
                 )}
 
@@ -850,14 +856,14 @@ function ConsultScreen() {
                         <Ionicons
                             name="attach-outline"
                             size={22}
-                            color={attachedDocument ? colors.accent : colors.textTertiary}
+                            color={attachments.length > 0 ? colors.accent : colors.textTertiary}
                         />
                     </Pressable>
 
                     <TextInput
                         ref={inputRef}
                         style={[styles.textInput, { color: colors.text }]}
-                        placeholder={attachedDocument ? "Ask about this document..." : "Ask a clinical question..."}
+                        placeholder={attachments.length > 0 ? "Ask about these documents…" : "Ask a clinical question..."}
                         placeholderTextColor={colors.textTertiary}
                         value={input}
                         onChangeText={setInput}
@@ -869,13 +875,13 @@ function ConsultScreen() {
                     />
                     <Pressable
                         onPress={isStreaming ? handleStop : handleSend}
-                        disabled={!isStreaming && !input.trim()}
+                        disabled={!isStreaming && !canSend}
                         style={({ pressed }) => [
                             styles.sendBtn,
                             {
                                 backgroundColor: isStreaming
                                     ? colors.recording
-                                    : input.trim()
+                                    : canSend
                                         ? colors.tint
                                         : colors.surfaceSecondary,
                                 opacity: pressed ? 0.8 : 1,
@@ -884,13 +890,13 @@ function ConsultScreen() {
                     >
                         {isStreaming ? (
                             <Ionicons name="stop" size={18} color="#fff" />
-                        ) : (isExtracting && extractPhase === 'waiting') ? (
+                        ) : isPreparingAttachments ? (
                             <ActivityIndicator size="small" color={colors.textTertiary} />
                         ) : (
                             <Ionicons
                                 name="arrow-up"
                                 size={20}
-                                color={input.trim() ? '#fff' : colors.textTertiary}
+                                color={canSend ? '#fff' : colors.textTertiary}
                             />
                         )}
                     </Pressable>
@@ -1097,28 +1103,23 @@ const styles = StyleSheet.create({
     },
     disclaimer: { fontSize: 10, fontFamily: 'Inter_400Regular', textAlign: 'center' },
 
-    // Camera / attachment styles
-    attachBanner: {
-        flexDirection: 'row', alignItems: 'center', gap: 8,
-        paddingHorizontal: 12, paddingVertical: 8,
-        borderRadius: 12, borderWidth: 1, marginBottom: 6,
+    // Attachment styles
+    attachStrip: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, paddingVertical: 8 },
+    attachThumbWrap: { position: 'relative' },
+    attachThumb: { width: 64, height: 64, borderRadius: 12, borderWidth: 1 },
+    attachThumbPdf: { alignItems: 'center', justifyContent: 'center', gap: 4, paddingHorizontal: 4 },
+    attachThumbName: { fontSize: 9, fontFamily: 'Inter_500Medium', maxWidth: 56 },
+    attachThumbOverlay: {
+        ...StyleSheet.absoluteFillObject, borderRadius: 12,
+        backgroundColor: 'rgba(0,0,0,0.35)', alignItems: 'center', justifyContent: 'center',
     },
-    attachText: {
-        flex: 1, fontSize: 13, fontFamily: 'Inter_500Medium',
+    attachRemove: {
+        position: 'absolute', top: -6, right: -6, width: 20, height: 20, borderRadius: 10,
+        alignItems: 'center', justifyContent: 'center', zIndex: 10,
     },
-    extractingBar: {
-        flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center',
-        gap: 8, paddingVertical: 10, paddingHorizontal: 12, borderRadius: 12, marginBottom: 6,
-    },
-    extractingText: {
-        fontSize: 13, fontFamily: 'Inter_500Medium',
-    },
-    extractingHint: {
-        width: '100%',
-        fontSize: 11,
-        fontFamily: 'Inter_400Regular',
-        textAlign: 'center',
-    },
+    bubbleThumbRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 6 },
+    bubbleThumb: { width: 88, height: 88, borderRadius: 10 },
+    bubbleThumbPdf: { backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' },
     freestyleHint: {
         flexDirection: 'row',
         alignItems: 'center',

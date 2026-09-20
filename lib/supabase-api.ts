@@ -443,6 +443,74 @@ export async function analyzeInsuranceCard(imageUri: string): Promise<{
  */
 export type ExtractProgressPhase = 'preparing' | 'uploading' | 'reading';
 
+export interface ConsultAttachmentPayload {
+  media_type: 'image/jpeg' | 'application/pdf';
+  data: string;
+  name?: string;
+}
+
+/**
+ * Read a picked file as base64 ready for upload. Images are resized and
+ * re-encoded as JPEG — never HEIC — and PDFs are read as-is.
+ */
+export async function prepareAttachmentBase64(
+  uri: string,
+  opts: { maxWidth?: number; compress?: number; mimeType?: 'image/jpeg' | 'application/pdf' } = {},
+): Promise<string> {
+  const maxWidth = opts.maxWidth ?? 1200;
+  const compress = opts.compress ?? 0.7;
+  const mimeType = opts.mimeType ?? 'image/jpeg';
+
+  try {
+    if (mimeType === 'application/pdf') {
+      return await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+    }
+
+    if (Platform.OS === 'web') {
+      const response = await fetch(uri);
+      const blob = await response.blob();
+      return await new Promise<string>((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+          let { width, height } = img;
+          if (width > maxWidth || height > maxWidth) {
+            if (width > height) { height = Math.round(height * maxWidth / width); width = maxWidth; }
+            else { width = Math.round(width * maxWidth / height); height = maxWidth; }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width; canvas.height = height;
+          const ctx = canvas.getContext('2d')!;
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', compress).split(',')[1]);
+        };
+        img.onerror = reject;
+        img.src = URL.createObjectURL(blob);
+      });
+    }
+
+    try {
+      const manipulated = await ImageManipulator.manipulateAsync(
+        uri,
+        [{ resize: { width: maxWidth } }],
+        { compress, format: ImageManipulator.SaveFormat.JPEG },
+      );
+      return await FileSystem.readAsStringAsync(manipulated.uri, { encoding: FileSystem.EncodingType.Base64 });
+    } catch (resizeErr: any) {
+      console.warn('[prepareAttachmentBase64] Resize failed, converting without resize:', resizeErr?.message);
+      // Still force JPEG — reading the original would ship HEIC from an iPhone.
+      const converted = await ImageManipulator.manipulateAsync(
+        uri,
+        [],
+        { compress, format: ImageManipulator.SaveFormat.JPEG },
+      );
+      return await FileSystem.readAsStringAsync(converted.uri, { encoding: FileSystem.EncodingType.Base64 });
+    }
+  } catch (e: any) {
+    console.warn('[prepareAttachmentBase64] Failed to encode file:', e?.message);
+    throw new Error("Couldn't read that file from your device. Please try selecting it again.");
+  }
+}
+
 export interface ExtractDocumentOptions {
   /** Max width in px — default 1200 (full), use ~900 for faster Consult attach */
   maxWidth?: number;
@@ -463,64 +531,11 @@ export async function extractClinicalDocument(
   const compress = options.compress ?? 0.7;
   const timeout = options.timeout ?? 120000;
 
-  let imageBase64: string;
   const mimeType = options.mimeType ?? 'image/jpeg';
 
   options.onProgress?.('preparing');
 
-  try {
-    if (mimeType === 'application/pdf') {
-      imageBase64 = await FileSystem.readAsStringAsync(imageUri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-    } else if (Platform.OS === 'web') {
-      const response = await fetch(imageUri);
-      const blob = await response.blob();
-      imageBase64 = await new Promise<string>((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => {
-          let { width, height } = img;
-          if (width > maxWidth || height > maxWidth) {
-            if (width > height) { height = Math.round(height * maxWidth / width); width = maxWidth; }
-            else { width = Math.round(width * maxWidth / height); height = maxWidth; }
-          }
-          const canvas = document.createElement('canvas');
-          canvas.width = width; canvas.height = height;
-          const ctx = canvas.getContext('2d')!;
-          ctx.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', compress).split(',')[1]);
-        };
-        img.onerror = reject;
-        img.src = URL.createObjectURL(blob);
-      });
-    } else {
-      try {
-        const manipulated = await ImageManipulator.manipulateAsync(
-          imageUri,
-          [{ resize: { width: maxWidth } }],
-          { compress, format: ImageManipulator.SaveFormat.JPEG },
-        );
-        imageBase64 = await FileSystem.readAsStringAsync(manipulated.uri, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-      } catch (resizeErr: any) {
-        console.warn('[extractClinicalDocument] Resize failed, converting without resize:', resizeErr?.message);
-        // Still force JPEG — reading the original would ship HEIC from an iPhone,
-        // which the extraction API cannot decode.
-        const converted = await ImageManipulator.manipulateAsync(
-          imageUri,
-          [],
-          { compress, format: ImageManipulator.SaveFormat.JPEG },
-        );
-        imageBase64 = await FileSystem.readAsStringAsync(converted.uri, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-      }
-    }
-  } catch (e: any) {
-    console.warn('[extractClinicalDocument] Failed to encode image:', e?.message);
-    throw new Error("Couldn't read that file from your device. Please try selecting it again.");
-  }
+  const imageBase64 = await prepareAttachmentBase64(imageUri, { maxWidth, compress, mimeType });
 
   options.onProgress?.('uploading');
 
@@ -1001,6 +1016,7 @@ function consumeSSEBuffer(buffer: string, callbacks: StreamClinicalQACallbacks):
 
 function friendlyConsultError(status: number, body: string): string {
   if (status === 401) return 'Your session expired. Please sign out and sign in again.';
+  if (status === 413) return 'Attachments are too large. Remove one or use a smaller photo.';
   if (status === 404) return 'Consult service is unavailable. Please try again later.';
   if (status >= 500) return 'Consult service is temporarily unavailable. Please try again.';
   try {
@@ -1026,7 +1042,7 @@ async function streamClinicalQAWithFetch(
 
   if (!response.ok) {
     const errText = await response.text().catch(() => '');
-    callbacks.onError(new Error(friendlyConsultError(response.status, errText)));
+    callbacks.onError(Object.assign(new Error(friendlyConsultError(response.status, errText)), { status: response.status }));
     return;
   }
 
@@ -1094,7 +1110,7 @@ function streamClinicalQAWithXHR(
       if (xhr.readyState !== 4) return;
 
       if (xhr.status >= 400 && xhr.status !== 0) {
-        callbacks.onError(new Error(friendlyConsultError(xhr.status, xhr.responseText || '')));
+        callbacks.onError(Object.assign(new Error(friendlyConsultError(xhr.status, xhr.responseText || '')), { status: xhr.status }));
       } else if (buffer.trim()) {
         consumeSSEBuffer(buffer + '\n\n', callbacks);
       }
@@ -1120,50 +1136,65 @@ export function streamClinicalQA(
     question: string;
     specialty_id?: string | null;
     conversation_history?: Array<{ role: 'user' | 'assistant'; content: string }>;
+    attachments?: ConsultAttachmentPayload[];
   },
   callbacks: StreamClinicalQACallbacks,
 ): AbortController {
   const controller = new AbortController();
-  const payload = {
+  const payload: Record<string, unknown> = {
     question: params.question,
     specialty_id: params.specialty_id ?? null,
     stream: true,
     conversation_history: params.conversation_history ?? [],
   };
+  if (params.attachments?.length) payload.attachments = params.attachments;
 
-  getAuthHeaders().then(async (headers) => {
-    const url = `${getBaseUrl()}/functions/v1/clinical-qa`;
+  const url = `${getBaseUrl()}/functions/v1/clinical-qa`;
 
+  const run = async (headers: Record<string, string>, cb: StreamClinicalQACallbacks) => {
     // React Native fetch buffers SSE until complete — use XHR for live token streaming.
     if (Platform.OS !== 'web') {
-      try {
-        await streamClinicalQAWithXHR(url, headers, payload, callbacks, controller.signal);
-      } catch (err: any) {
-        if (err?.name !== 'AbortError') {
-          callbacks.onError(err instanceof Error ? err : new Error(String(err)));
-        }
-      }
+      await streamClinicalQAWithXHR(url, headers, payload, cb, controller.signal);
       return;
     }
-
     try {
-      await streamClinicalQAWithFetch(url, headers, payload, callbacks, controller.signal);
+      await streamClinicalQAWithFetch(url, headers, payload, cb, controller.signal);
     } catch (err: any) {
       if (err?.name === 'AbortError') return;
       console.warn('[streamClinicalQA] fetch stream failed, trying XHR:', err?.message);
-      try {
-        await streamClinicalQAWithXHR(url, headers, payload, callbacks, controller.signal);
-      } catch (xhrErr: any) {
-        if (xhrErr?.name !== 'AbortError') {
-          callbacks.onError(xhrErr instanceof Error ? xhrErr : new Error(String(xhrErr)));
+      await streamClinicalQAWithXHR(url, headers, payload, cb, controller.signal);
+    }
+  };
+
+  void (async () => {
+    let retried = false;
+    // A stale access token surfaces as a 401 — refresh once and replay before reporting it.
+    const proxied: StreamClinicalQACallbacks = {
+      ...callbacks,
+      onError: (err) => {
+        const status = (err as Error & { status?: number }).status;
+        if (status === 401 && !retried && !controller.signal.aborted) {
+          retried = true;
+          void (async () => {
+            try {
+              await supabase.auth.refreshSession();
+              await run(await getAuthHeaders(), proxied);
+            } catch (e: any) {
+              if (e?.name !== 'AbortError') callbacks.onError(e instanceof Error ? e : new Error(String(e)));
+            }
+          })();
+          return;
         }
-      }
+        callbacks.onError(err);
+      },
+    };
+
+    try {
+      await run(await getAuthHeaders(), proxied);
+    } catch (err: any) {
+      if (err?.name !== 'AbortError') callbacks.onError(err instanceof Error ? err : new Error(String(err)));
     }
-  }).catch(err => {
-    if (err?.name !== 'AbortError') {
-      callbacks.onError(err instanceof Error ? err : new Error(String(err)));
-    }
-  });
+  })();
 
   return controller;
 }
