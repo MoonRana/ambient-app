@@ -20,12 +20,25 @@ interface EmOption {
 
 const EM_OPTIONS: EmOption[] = [
   { code: null, label: 'Auto', helper: 'Let the AI choose and justify the level' },
-  { code: '99213', label: '99213', helper: 'Established · low complexity, expanded problem-focused' },
-  { code: '99214', label: '99214', helper: 'Established · moderate complexity, detailed' },
-  { code: '99215', label: '99215', helper: 'Established · high complexity, comprehensive' },
-  { code: '99203', label: '99203', helper: 'New patient · low complexity' },
-  { code: '99204', label: '99204', helper: 'New patient · moderate complexity' },
-  { code: '99205', label: '99205', helper: 'New patient · high complexity' },
+  // Office or clinic
+  { code: '99213', label: '99213', helper: 'Office · established · low-complexity MDM' },
+  { code: '99214', label: '99214', helper: 'Office · established · moderate-complexity MDM' },
+  { code: '99215', label: '99215', helper: 'Office · established · high-complexity MDM' },
+  { code: '99203', label: '99203', helper: 'Office · new patient · low-complexity MDM' },
+  { code: '99204', label: '99204', helper: 'Office · new patient · moderate-complexity MDM' },
+  { code: '99205', label: '99205', helper: 'Office · new patient · high-complexity MDM' },
+  // Nursing facility / SNF
+  { code: '99304', label: '99304', helper: 'Nursing facility · initial · straightforward/low MDM' },
+  { code: '99305', label: '99305', helper: 'Nursing facility · initial · moderate-complexity MDM' },
+  { code: '99306', label: '99306', helper: 'Nursing facility · initial · high-complexity MDM' },
+  { code: '99308', label: '99308', helper: 'Nursing facility · subsequent · low-complexity MDM' },
+  { code: '99309', label: '99309', helper: 'Nursing facility · subsequent · moderate-complexity MDM' },
+  { code: '99310', label: '99310', helper: 'Nursing facility · subsequent · high-complexity MDM' },
+  // Home or residence — includes assisted living
+  { code: '99348', label: '99348', helper: 'Home / assisted living · established · low-complexity MDM' },
+  { code: '99349', label: '99349', helper: 'Home / assisted living · established · moderate-complexity MDM' },
+  { code: '99350', label: '99350', helper: 'Home / assisted living · established · high-complexity MDM' },
+  { code: '99344', label: '99344', helper: 'Home / assisted living · new patient · moderate-complexity MDM' },
 ];
 
 export default function NoteSettingsCard({ workflowId, customInstructions, emLevel }: Props) {

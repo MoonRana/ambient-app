@@ -198,6 +198,9 @@ RULES:
 1. Return the COMPLETE revised note, from the first section header to the last. Never return a fragment, a diff, or a commentary — only the note itself.
 2. Apply ONLY what the physician asked for. Leave every other section byte-for-byte unchanged.
 3. NEVER invent clinical findings, vitals, lab values, medications, or history that the physician did not supply. If the request asks for content that was never documented, expand the structure and mark the unknown parts "Not assessed" or "Not obtained this visit" rather than fabricating a finding.
+3a. Record what the physician said at the level of detail they said it. If they state that a system or exam was normal without giving findings ("add a normal exam", "rest of exam normal", "ROS otherwise negative"), write exactly that — for example "HEENT: Normal per clinician." or "All other systems negative per clinician." Do NOT elaborate it into specific findings the physician never stated (no "PERRLA", "EOMI", "no thyromegaly", "no focal deficits", "normal mood and affect"). Templated normal findings that were not dictated are false documentation.
+3b. Never write a normal statement that contradicts a finding already in the note. A patient with a documented surgical incision does not have "skin intact, no lesions" — keep the documented finding and write, for example, "Skin: Right hip incision as documented; otherwise normal per clinician."
+3c. Never use the status words "stable", "well-controlled", "at goal", "improving", "worsening" or "resolved" unless the physician used them.
 4. Preserve the existing section headers exactly — ALL CAPS at column zero followed by a colon.
 5. Output PLAIN TEXT. No markdown, no asterisks, no "#" headings. This is pasted into an EHR.`;
 
@@ -250,7 +253,9 @@ function splitSections(note: string): Record<string, string> {
 
   for (const line of note.split("\n")) {
     const bare = line.replace(/^\s*#{1,6}\s*/, "").replace(/\*\*/g, "").trim();
-    const m = bare.match(/^([A-Z][A-Z &/'-]{2,40}):\s*(.*)$/);
+    // Only real note sections split the note. A generic "ALL CAPS:" match also caught
+    // exam lines such as "HEENT:", which truncated Physical Examination and mislabelled the diff.
+    const m = bare.match(SECTION_HEADER);
     if (m) {
       out[current] = buf.join("\n").trim();
       current = m[1].trim();
@@ -284,5 +289,20 @@ function diffSections(before: string, after: string) {
 }
 
 function titleCase(s: string) {
-  return s.toLowerCase().replace(/\b[a-z]/g, (c) => c.toUpperCase());
+  const small = new Set(["of", "and", "the", "or", "in"]);
+  return s.toLowerCase().split(" ").map((w, i) =>
+    i > 0 && small.has(w) ? w : w.replace(/^[a-z]/, (c) => c.toUpperCase())
+  ).join(" ");
 }
+
+const SECTION_NAMES = [
+  "PATIENT IDENTIFICATION", "CHIEF COMPLAINT", "HISTORY OF PRESENT ILLNESS", "PAST MEDICAL HISTORY",
+  "PAST SURGICAL HISTORY", "FAMILY HISTORY", "SOCIAL HISTORY", "ALLERGIES", "CURRENT MEDICATIONS",
+  "MEDICATIONS", "REVIEW OF SYSTEMS", "PHYSICAL EXAMINATION", "PHYSICAL EXAM", "LABS AND DATA",
+  "ASSESSMENT AND PLAN", "ASSESSMENT", "PLAN", "SUBJECTIVE", "OBJECTIVE", "FOLLOW-UP", "FOLLOW UP",
+];
+
+// Longest names first so "ASSESSMENT AND PLAN" wins over "ASSESSMENT".
+const SECTION_HEADER = new RegExp(
+  `^(${[...SECTION_NAMES].sort((a, b) => b.length - a.length).map((n) => n.replace(/[-/]/g, "\\$&")).join("|")}):\\s*(.*)$`,
+);

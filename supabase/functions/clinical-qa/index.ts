@@ -48,7 +48,9 @@ You are operating inside DoMyNote, a HIPAA-compliant clinical decision-support t
 
 const ATTACHMENT_ADDENDUM = `ATTACHED DOCUMENTS
 The clinician has attached one or more clinical documents (photos or PDFs of lab panels, imaging reports, medication lists, notes, or vitals). Read them directly — you can see them. Never say you cannot view images.
-- Under "Assumptions", first state what each document is and list its key values. Flag every value outside the reference range printed on the document and say by how much.
+- In the "Case Data Check", first state what each document is. Then list ONLY the values that fall outside the reference range printed beside them, with how far out they are. Check each comparison before listing it: a value inside its range is never "abnormal", and everything else is summarized in one line as within range.
+- Describe each value the same way everywhere. Once the Case Data Check lists a value as out of range, never call it "normal" later; say "minimally elevated" throughout.
+- Cite only values that are actually on the document. If a test is not shown (for example albumin when only an albumin/globulin ratio is printed), do not describe it as normal or abnormal.
 - Photographs of screens or paper may have glare, skew, or partial cropping: read what is legible, and explicitly name any values you cannot read rather than guessing.
 - Ground the answer in the document's actual values. Use retrieved evidence where it applies; if no evidence was retrieved, cite only well-established guidelines you are confident exist, and keep the References section short rather than inventing citations.`;
 
@@ -95,7 +97,9 @@ async function deriveRetrievalQuery(apiKey: string, question: string, attachment
     const line = data.content?.[0]?.text?.trim();
     if (!line) return question;
     console.log(`[clinical-qa] retrieval query from attachments: ${line}`);
-    return `${question} ${line}`.trim();
+    // A casual ask ("a friend had this panel, analyze it") only dilutes the embedding —
+    // search on the document's topic alone unless the question carries real content.
+    return question.split(/\s+/).length <= 10 ? line : `${line} — ${question}`;
   } catch (e) {
     console.warn('[clinical-qa] retrieval hint skipped:', (e as Error)?.message);
     return question;
@@ -108,8 +112,11 @@ const STRUCTURED_PROMPT = `You are an expert clinical decision support assistant
 
 ## Clinical Response: [Topic]
 
-⚠️ **CLINICAL CASE ALERT**
-Clinical judgment required: AI can provide general information but may not fully account for clinical nuance or patient-specific factors. Always verify recommendations with current guidelines and clinical judgment.
+### Case Data Check
+[Include this section ONLY when the question gives patient-specific data, an attached document, criteria to apply, or something to calculate — otherwise omit it entirely and start with the Bottom Line. One line per item that decides the answer: each out-of-range document value with its printed range; each criterion as "<criterion>: <patient value> → MET" or "→ NOT MET"; each calculation with the patient's numbers substituted and the result. End with a one-line tally.]
+
+### Bottom Line
+[The direct answer in 1-3 sentences that a clinician can act on at the bedside: the specific drug and dose, threshold, diagnosis, or next step. No preamble, no restating the question. It must agree exactly with the Case Data Check when there is one.]
 
 ---
 
@@ -119,7 +126,7 @@ Clinical judgment required: AI can provide general information but may not fully
 ---
 
 ### Evidence-Based Answer
-[Provide a clear, direct answer to the clinical question in 2-3 sentences. This should be the core recommendation.]
+[Expand on the bottom line in 2-3 sentences: what the evidence says and how strong it is. Do not simply repeat the Bottom Line.]
 
 ---
 
@@ -155,13 +162,20 @@ Clinical judgment required: AI can provide general information but may not fully
 
 ---
 
-IMPORTANT FORMATTING RULES:
+IMPORTANT RULES:
 1. Use markdown formatting (headers, bold, bullet points, numbered lists)
-2. Include the clinical alert banner at the top
+2. Work the case before you conclude: when there is patient data to verify, the Case Data Check comes first and the Bottom Line follows from it; for general questions, lead with the Bottom Line. Do not open with a warning banner or disclaimer; instead end the response with exactly one line: "_Decision support only — verify against current guidelines and the individual patient._"
 3. Number your references and cite them in Key Points using [1], [2], etc.
 4. Be specific about drug names, dosages, and recommendations
 5. If the guidelines don't cover a topic well, acknowledge limitations clearly
-6. Keep the response focused and clinically actionable`;
+6. Keep the response focused and clinically actionable
+7. CALCULATIONS: for any computed value (creatinine clearance, risk scores, weight-based doses, ratios), write the formula with the patient's numbers substituted and work it step by step, then re-check the arithmetic before stating the result. Apply sex and unit correction factors explicitly. State when a result crosses a clinically meaningful threshold.
+8. CONSISTENCY: before finishing, make sure every section agrees with the others — the same criteria counts, the same values, the same dose. Never describe a value as both normal and abnormal.
+9. NO INVENTED DATA: never state a patient value, finding, or test result that was not provided. Restate the patient's given data (age, sex, weight, labs) exactly as stated; never alter it.
+11. CRITERIA: when a recommendation depends on a multi-part rule (dose-reduction criteria, risk scores, diagnostic criteria), evaluate EVERY criterion on its own line against the patient's stated value and mark it MET or NOT MET — for example "Age 85 ≥ 80 years: MET" — before stating the conclusion. The count in the conclusion must equal the lines marked MET.
+12. RULE VS EXCEPTION: when a guideline gives a general target plus condition-specific exceptions (blood pressure targets, dose adjustments, timing), state the general rule first and label each exception with the condition it applies to. Never present an exception as the default.
+13. EXCERPTS ARE FRAGMENTS: the Available Evidence Context is cut mechanically from guideline PDFs, so an excerpt may begin mid-recommendation and contain only part of it — often only the exception. Read qualifiers literally ("compelling conditions", "in patients with…", "except…") and never promote a fragment into the general rule. When an excerpt is clearly partial, complete the recommendation from your knowledge of that same guideline and say which part came from the excerpt.
+10. REFERENCES: cite the Available Evidence Context when it is provided. If no evidence context was retrieved, title the section "### References (from model knowledge — verify before citing)" and list only guidelines you are confident exist, with the correct issuing society.`;
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -291,7 +305,10 @@ serve(async (req) => {
         ])
       : Promise.resolve({ data: null, error: null });
 
-    const [ragSettled, firecrawlSettled] = await Promise.allSettled([ragPromise, firecrawlPromise]);
+    // Web search is only consulted when guideline retrieval comes back thin, so only
+    // wait for it then — awaiting it unconditionally cost ~6s before the first word.
+    firecrawlPromise.catch(() => {});
+    const [ragSettled] = await Promise.allSettled([ragPromise]);
 
     let results: any[] = [];
     if (ragSettled.status === 'fulfilled') {
@@ -319,22 +336,37 @@ serve(async (req) => {
     if (mode === 'thorough') {
       const needsFallback = results.length < 3 || avgSimilarity < 0.45;
 
-      if (needsFallback && firecrawlSettled.status === 'fulfilled') {
-        const { data: webData, error: webError } = (firecrawlSettled.value as any) ?? {};
-        if (!webError && webData?.data && Array.isArray(webData.data)) {
-          webResults = webData.data;
-          console.log(`Using ${webResults.length} Firecrawl web results (RAG avg similarity: ${avgSimilarity.toFixed(3)})`);
+      if (needsFallback) {
+        // With an attachment the model answers from the document itself, so web evidence is a
+        // bonus: give it a short grace period instead of holding the first word for the full timeout.
+        const firecrawlWait = hasAttachments
+          ? Promise.race([
+              firecrawlPromise,
+              new Promise((_, reject) => setTimeout(() => reject(new Error('Firecrawl grace period elapsed')), 2500)),
+            ])
+          : firecrawlPromise;
+        const [firecrawlSettled] = await Promise.allSettled([firecrawlWait]);
+        if (firecrawlSettled.status === 'fulfilled') {
+          const { data: webData, error: webError } = (firecrawlSettled.value as any) ?? {};
+          if (!webError && webData?.data && Array.isArray(webData.data)) {
+            webResults = webData.data;
+            console.log(`Using ${webResults.length} Firecrawl web results (RAG avg similarity: ${avgSimilarity.toFixed(3)})`);
+          }
+        } else {
+          console.log('Firecrawl unavailable, skipping Layer 2');
         }
-      } else if (needsFallback) {
-        console.log('Firecrawl unavailable, skipping Layer 2');
       }
 
-      if (needsFallback && (results.length + webResults.length) < 3) {
+      if (needsFallback && !hasAttachments && (results.length + webResults.length) < 3) {
         console.log('Still insufficient coverage, attempting PubMed search...');
         try {
-          const { data: pubmedData, error: pubmedError } = await supabase.functions.invoke('pubmed-search', {
-            body: { query: retrievalQuery, maxResults: 5 }
-          });
+          // This call was unbounded — a slow PubMed held the answer indefinitely.
+          const { data: pubmedData, error: pubmedError } = await Promise.race([
+            supabase.functions.invoke('pubmed-search', { body: { query: retrievalQuery, maxResults: 5 } }),
+            new Promise<{ data: null; error: { message: string } }>((resolve) =>
+              setTimeout(() => resolve({ data: null, error: { message: 'pubmed timeout' } }), 4000)
+            ),
+          ]);
           if (!pubmedError && pubmedData?.results) {
             pubmedResults = pubmedData.results;
             console.log(`Retrieved ${pubmedResults.length} PubMed abstracts`);
@@ -487,6 +519,9 @@ Generate a comprehensive, structured clinical response following the exact forma
           body: JSON.stringify({
             model: activeModel,
             max_tokens: 8192,
+            // The API default of 1.0 is far too loose for clinical reasoning — it produced
+            // answers that contradicted the patient's own stated age.
+            temperature: 0.2,
             stream: true,
             system: systemPrompt,
             messages: buildMessages(),
@@ -517,6 +552,10 @@ Generate a comprehensive, structured clinical response following the exact forma
       // Create a TransformStream to process SSE and add metadata
       const encoder = new TextEncoder();
       const decoder = new TextDecoder();
+      // Upstream SSE lines are routinely split across network chunks. Parsing each
+      // chunk alone made JSON.parse fail on the fragments, and the empty catch below
+      // swallowed them — silently deleting words (and doses) from the answer.
+      let carry = '';
       
       const transformStream = new TransformStream({
         start(controller) {
@@ -537,9 +576,10 @@ Generate a comprehensive, structured clinical response following the exact forma
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(metadata)}\n\n`));
         },
         async transform(chunk, controller) {
-          const text = decoder.decode(chunk);
-          // Pass through the Anthropic SSE events, parsing content_block_delta
-          const lines = text.split('\n');
+          carry += decoder.decode(chunk, { stream: true });
+          // Only complete lines are parsed; the trailing partial waits for the next chunk.
+          const lines = carry.split('\n');
+          carry = lines.pop() ?? '';
           
           for (const line of lines) {
             if (line.startsWith('data: ')) {
@@ -625,6 +665,7 @@ Generate a comprehensive, structured clinical response following the exact forma
       body: JSON.stringify({
         model: hasAttachments || mode === 'thorough' ? 'claude-sonnet-4-5' : 'claude-haiku-4-5',
         max_tokens: 8192,
+        temperature: 0.2,
         system: systemPrompt,
         messages: buildMessages(),
       }),
